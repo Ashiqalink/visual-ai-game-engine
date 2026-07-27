@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+*.so
+*.dll
+*.dylib
+
+# C++ Build outputs & binaries
+build/
+dist/
+*.egg-info/
+*.lib
+*.exp
+*.obj
+*.o
+.cmake/
+CMakeCache.txt
+CMakeFiles/
+
+# Virtual Environments
+venv/
+env/
+game_env/
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
