@@ -69,14 +69,15 @@ except (ImportError, AttributeError):
 
 # ── Gesture detection constants ───────────────────────────────────────────────
 # Pinch
-_PINCH_THRESHOLD_NORM = 0.07   # normalised 3-D distance thumb↔index tips
+_PINCH_ENTER_THRESHOLD = 0.06   # Start pinching if closer than this
+_PINCH_EXIT_THRESHOLD  = 0.09   # Release pinch if further than this
 _PINCH_DEBOUNCE       = 3      # consecutive frames needed to toggle pinch state
 
 # Z-push click
 _Z_HISTORY_LEN       = 10      # rolling window size (frames)
-_Z_CLICK_THRESHOLD   = 0.025   # minimum Z delta to count as a push
-_Z_CLICK_XY_MAX_PX   = 35      # max lateral drift allowed during push (px)
-_Z_COOLDOWN_FRAMES   = 25      # frames before another click can fire
+_Z_CLICK_THRESHOLD   = 0.055   # minimum Z delta to count as a push (~2 inch deliberate push)
+_Z_CLICK_XY_MAX_PX   = 30      # max lateral drift allowed during push (px)
+_Z_COOLDOWN_FRAMES   = 40      # frames before another click can fire (~1.3 s at 30 fps)
 
 
 def _dist2d(p1, p2) -> float:
@@ -110,6 +111,10 @@ class _GestureState:
         self.z_cooldown: int        = 0
         self.z_start_xy             = None   # type: tuple[int,int] | None
 
+        # Finger lock state
+        self.locked_pos: tuple[float, float] | None = None
+        self.lost_frames: int = 0
+
     def reset(self):
         self.smooth_ix = self.smooth_iy = -1.0
         self.smooth_px = self.smooth_py = -1.0
@@ -118,6 +123,8 @@ class _GestureState:
         self.z_history.clear()
         self.z_cooldown = 0
         self.z_start_xy = None
+        self.locked_pos = None
+        self.lost_frames = 0
 
 
 # ── VisionPipeline ─────────────────────────────────────────────────────────────
@@ -145,7 +152,7 @@ class VisionPipeline(threading.Thread):
         width: int = 800,
         height: int = 600,
         camera_index: int = 0,
-        smooth_alpha: float = 0.25,
+        smooth_alpha: float = 0.20,
     ):
         super().__init__(daemon=True)
         self.result_queue  = result_queue
@@ -154,6 +161,12 @@ class VisionPipeline(threading.Thread):
         self.camera_index  = camera_index
         self.smooth_alpha  = smooth_alpha
         self.running       = False
+
+        # ── ToF (Time-of-Flight) Depth Sensor State ───────────────────────────
+        self.tof_active: bool       = False
+        self.tof_simulated: bool    = False
+        self.tof_device_name: str   = "None"
+        self.depth_map: np.ndarray | None = None
 
         # ── MediaPipe: Face Detection ─────────────────────────────────────────
         self._mp_face = None
@@ -171,7 +184,7 @@ class VisionPipeline(threading.Thread):
             try:
                 self._mp_hands = mp_hands_module.Hands(
                     static_image_mode=False,
-                    max_num_hands=1,
+                    max_num_hands=2,
                     model_complexity=1,
                     min_detection_confidence=0.7,
                     min_tracking_confidence=0.65,
@@ -259,10 +272,17 @@ class VisionPipeline(threading.Thread):
             hand_results = self._mp_hands.process(rgb)
 
             if hand_results.multi_hand_landmarks:
-                lm = hand_results.multi_hand_landmarks[0].landmark
-                gesture = self._extract_gesture(lm)
+                selected_lm = self._select_locked_hand(hand_results.multi_hand_landmarks)
+                if selected_lm is not None:
+                    gesture = self._extract_gesture(selected_lm)
+                else:
+                    self._gs.lost_frames += 1
+                    if self._gs.lost_frames > 12:
+                        self._gs.reset()
             else:
-                self._gs.reset()
+                self._gs.lost_frames += 1
+                if self._gs.lost_frames > 12:
+                    self._gs.reset()
 
         payload = {
             # Face
@@ -273,6 +293,54 @@ class VisionPipeline(threading.Thread):
             **gesture,
         }
         return payload
+
+    def _select_locked_hand(self, multi_hand_landmarks):
+        """
+        Locks onto a single index finger. If multiple hands/fingers are detected,
+        returns the landmark set whose index tip is closest to the locked position.
+        If locked hand is not found within MAX_LOCK_DIST_PX, returns None until lost_frames expires.
+        """
+        gs = self._gs
+        W, H = self.width, self.height
+        MAX_LOCK_DIST_PX = 250.0  # max spatial jump allowed between consecutive frames
+
+        candidates = []
+        for hand_lms in multi_hand_landmarks:
+            lm = hand_lms.landmark
+            ix = lm[8].x * W
+            iy = lm[8].y * H
+            candidates.append((ix, iy, lm))
+
+        if not candidates:
+            return None
+
+        if gs.locked_pos is None:
+            # First lock: take first detected hand
+            best_ix, best_iy, best_lm = candidates[0]
+            gs.locked_pos = (best_ix, best_iy)
+            gs.lost_frames = 0
+            return best_lm
+
+        # Find candidate closest to current locked position
+        lx, ly = gs.locked_pos
+        best_lm = None
+        best_dist = float('inf')
+        best_pos = None
+
+        for ix, iy, lm in candidates:
+            dist = math.sqrt((ix - lx) ** 2 + (iy - ly) ** 2)
+            if dist < best_dist:
+                best_dist = dist
+                best_lm = lm
+                best_pos = (ix, iy)
+
+        if best_dist <= MAX_LOCK_DIST_PX:
+            gs.locked_pos = best_pos
+            gs.lost_frames = 0
+            return best_lm
+
+        # All candidates are too far from locked position -> likely secondary finger / noise
+        return None
 
     # ── Gesture extraction ────────────────────────────────────────────────────
     def _extract_gesture(self, lm) -> dict:
@@ -295,7 +363,20 @@ class VisionPipeline(threading.Thread):
             gs.smooth_px = (raw_ix + raw_tx) / 2
             gs.smooth_py = (raw_iy + raw_ty) / 2
 
-        a = self.smooth_alpha
+        # ── 2. Z-Push Click ───────────────────────────────────────────────────
+        z_val = lm[8].z   # MediaPipe Z: more negative = closer to camera
+        click_fired, z_delta, xy_drift = self._detect_z_click(z_val, (round(gs.smooth_ix), round(gs.smooth_iy)))
+
+        # Dynamic adaptive EMA alpha: scale based on movement velocity to filter micro jitter while keeping speed
+        d_dist = math.sqrt((raw_ix - gs.smooth_ix) ** 2 + (raw_iy - gs.smooth_iy) ** 2)
+        scale = max(0.0, min(1.0, (d_dist - 2.0) / 20.0))
+        min_alpha = min(0.10, self.smooth_alpha)
+        a = min_alpha + scale * (self.smooth_alpha - min_alpha)
+
+        # Heavily dampen X/Y updates if z_delta > 0.015 (active forward push)
+        if z_delta > 0.015:
+            a = 0.02
+
         gs.smooth_ix = _ema(raw_ix, gs.smooth_ix, a)
         gs.smooth_iy = _ema(raw_iy, gs.smooth_iy, a)
         raw_px = (raw_ix + raw_tx) / 2
@@ -313,7 +394,12 @@ class VisionPipeline(threading.Thread):
             (lm[4].y - lm[8].y) ** 2 +
             (lm[4].z - lm[8].z) ** 2 * 0.5   # Z weighted down (noisier)
         )
-        raw_pinching = pinch_dist_norm < _PINCH_THRESHOLD_NORM
+        
+        # Hysteresis: use different thresholds depending on current state
+        if gs.pinch_active:
+            raw_pinching = pinch_dist_norm < _PINCH_EXIT_THRESHOLD
+        else:
+            raw_pinching = pinch_dist_norm < _PINCH_ENTER_THRESHOLD
 
         # Debounce: require N consecutive frames before toggling
         if raw_pinching:
@@ -326,10 +412,6 @@ class VisionPipeline(threading.Thread):
             gs.pinch_consec = 0
             if gs.release_consec >= _PINCH_DEBOUNCE:
                 gs.pinch_active = False
-
-        # ── 2. Z-Push Click ───────────────────────────────────────────────────
-        z_val = lm[8].z   # MediaPipe Z: more negative = closer to camera
-        click_fired, z_delta = self._detect_z_click(z_val, index_pos)
 
         # ── 3. Index Isolation ────────────────────────────────────────────────
         # Uses landmark 9 (middle MCP) as a stable palm anchor.
@@ -347,7 +429,12 @@ class VisionPipeline(threading.Thread):
         middle_ext = extended(12, 10, 9)
         ring_ext   = extended(16, 14, 13)
         pinky_ext  = extended(20, 18, 17)
-        is_isolated = index_ext and not (middle_ext or ring_ext or pinky_ext)
+        # Relaxed index isolation: allow middle finger co-extension (natural tendon attachment),
+        # requiring only ring and pinky to remain non-extended.
+        is_isolated = index_ext and not (ring_ext or pinky_ext)
+
+        # ── 4. ToF Depth Lookup ───────────────────────────────────────────────
+        tof_active, tof_z_m, depth_source = self.sample_tof_depth(index_pos[0], index_pos[1], z_val)
 
         return {
             "hand_visible":      True,
@@ -357,12 +444,35 @@ class VisionPipeline(threading.Thread):
             "click_just_fired":  click_fired,
             "is_index_isolated": is_isolated,
             "z_delta":           z_delta,
+            "xy_drift":          xy_drift,
+            "tof_active":        tof_active,
+            "tof_z_m":           tof_z_m,
+            "depth_source":      depth_source,
         }
+
+    # ── ToF Depth Probe & Sampling ─────────────────────────────────────────────
+    def sample_tof_depth(self, px: int, py: int, lm_z: float = 0.0) -> tuple[bool, float, str]:
+        """
+        Samples physical depth (in meters) at 2D (X, Y) pixel coordinates from ToF camera frame.
+        Falls back to relative estimation if ToF is inactive.
+        """
+        if self.tof_active or self.tof_simulated:
+            if self.depth_map is not None and 0 <= py < self.depth_map.shape[0] and 0 <= px < self.depth_map.shape[1]:
+                # 16-bit depth values in mm -> converted to meters
+                raw_depth = self.depth_map[py, px]
+                z_m = float(raw_depth) / 1000.0 if raw_depth > 0 else 0.45 + (lm_z * 0.5)
+            else:
+                # Simulated hardware ToF depth reading centered around 0.45m calibrated baseline
+                z_m = round(max(0.15, 0.45 + (lm_z * 0.6)), 3)
+            src_label = "ToF IR Hardware" if self.tof_active else "ToF Hardware (Simulated)"
+            return True, z_m, src_label
+
+        return False, 0.0, "RGB MediaPipe Estimate"
 
     # ── Z-push click algorithm ────────────────────────────────────────────────
     def _detect_z_click(self, z_now: float, xy_now: tuple) -> tuple:
         """
-        Returns (fired: bool, delta_z: float).
+        Returns (fired: bool, delta_z: float, drift: float).
 
         Algorithm
         ---------
@@ -374,34 +484,40 @@ class VisionPipeline(threading.Thread):
         A cooldown prevents double-firing.
         """
         gs = self._gs
+        drift = 0.0
 
         if gs.z_cooldown > 0:
             gs.z_cooldown -= 1
             gs.z_history.append(z_now)
             if len(gs.z_history) > _Z_HISTORY_LEN:
                 gs.z_history.pop(0)
-            return False, 0.0
+            return False, 0.0, 0.0
 
         gs.z_history.append(z_now)
         if len(gs.z_history) > _Z_HISTORY_LEN:
             gs.z_history.pop(0)
         if len(gs.z_history) < _Z_HISTORY_LEN:
-            return False, 0.0
+            return False, 0.0, 0.0
 
         z_baseline = gs.z_history[0]
         delta_z    = z_baseline - z_now    # positive = moving toward camera
 
+        if gs.z_start_xy is not None:
+            drift = _dist2d(gs.z_start_xy, xy_now)
+
         if delta_z >= _Z_CLICK_THRESHOLD:
             if gs.z_start_xy is None:
                 gs.z_start_xy = xy_now
-            drift = _dist2d(gs.z_start_xy, xy_now)
+                drift = 0.0
+            else:
+                drift = _dist2d(gs.z_start_xy, xy_now)
 
             if drift < _Z_CLICK_XY_MAX_PX:
                 # ✓ Valid Z-push click
                 gs.z_history.clear()
                 gs.z_start_xy = None
                 gs.z_cooldown = _Z_COOLDOWN_FRAMES
-                return True, delta_z
+                return True, delta_z, drift
             else:
                 # Too much lateral movement — reset
                 gs.z_history.clear()
@@ -410,7 +526,7 @@ class VisionPipeline(threading.Thread):
             # Push hasn't started — keep refreshing baseline XY
             gs.z_start_xy = xy_now
 
-        return False, delta_z
+        return False, delta_z, drift
 
     # ── Helpers ───────────────────────────────────────────────────────────────
     @staticmethod
@@ -423,6 +539,10 @@ class VisionPipeline(threading.Thread):
             "click_just_fired":  False,
             "is_index_isolated": False,
             "z_delta":           0.0,
+            "xy_drift":          0.0,
+            "tof_active":        False,
+            "tof_z_m":           0.0,
+            "depth_source":      "RGB MediaPipe Estimate",
         }
 
     def _empty_payload(self, tx: float, ty: float, frame: np.ndarray) -> dict:

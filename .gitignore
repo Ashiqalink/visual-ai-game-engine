@@ -29,3 +29,7 @@ game_env/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local skills/docs
+SKILLS.md
+.agents/
