@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel", "pybind11>=2.10.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "visual_ai"
+version = "0.1.0"
+description = "High-performance Computer Vision AI tracking and physics library for game developers"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "Visual AI Game Engine Developers" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: C++",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Games/Entertainment",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.20.0",
+    "opencv-python>=4.8.0",
+    "mediapipe>=0.10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/user/visual_ai_game_engine"
+Documentation = "https://github.com/user/visual_ai_game_engine/tree/main/docs"
+
+[tool.setuptools.packages.find]
+where = ["src"]

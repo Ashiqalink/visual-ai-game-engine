@@ -4,8 +4,8 @@ from pybind11.setup_helpers import Pybind11Extension, build_ext
 ext_modules = [
     Pybind11Extension(
         "engine_core",
-        ["cpp/engine.cpp", "cpp/bridge.cpp"],
-        include_dirs=["cpp"],
+        ["src/engine.cpp", "src/bridge.cpp"],
+        include_dirs=["src"],
     ),
 ]
 
@@ -14,7 +14,8 @@ setup(
     version="0.1.0",
     author="Visual AI Game Engine Developers",
     description="High-performance Computer Vision AI tracking and physics library for game developers",
-    packages=find_packages(),
+    package_dir={"": "src"},
+    packages=find_packages(where="src"),
     ext_modules=ext_modules,
     cmdclass={"build_ext": build_ext},
     zip_safe=False,
@@ -25,3 +26,4 @@ setup(
         "mediapipe>=0.10.0",
     ],
 )
+

@@ -6,6 +6,34 @@ High-performance computer vision AI tracking and physics SDK for game developers
 
 ---
 
+## 📁 Project Structure
+
+```
+visual_ai_game_engine/
+├── pyproject.toml          # Modern PEP 517 packaging configuration
+├── setup.py                # Legacy setuptools build configuration
+├── CMakeLists.txt          # CMake build script for C++ core module
+├── src/                    # Source directory (C++ core & Python library)
+│   ├── engine.hpp          # C++ core header
+│   ├── engine.cpp          # Core physics & game logic
+│   ├── bridge.cpp          # pybind11 C++/Python bindings
+│   └── visual_ai/          # Python library package
+│       ├── __init__.py     # SDK entry point & engine selector
+│       ├── pipeline.py     # Threaded camera vision detector
+│       └── fallback_engine.py # Python fallback engine
+├── tests/                  # Automated test suite
+│   ├── test_engine.py      # Unit tests for physics engine
+│   └── integration_test.py # Full pipeline integration tests
+├── docs/                   # Documentation & developer examples
+│   ├── index.md            # Comprehensive user manual
+│   └── examples/
+│       └── demo.py         # Developer interactive demo
+├── requirements.txt        # Package dependencies
+└── README.md               # Project overview & quickstart guide
+```
+
+---
+
 ## 🚀 Quickstart & Installation
 
 ### 1. Install Library
@@ -20,6 +48,16 @@ pip install -e .
 
 ```bash
 python setup.py build_ext --inplace
+```
+
+---
+
+## 🧪 Running Tests
+
+Run the automated test suite using `unittest`:
+
+```bash
+python -m unittest discover -s tests
 ```
 
 ---
@@ -59,15 +97,6 @@ try:
 finally:
     pipeline.stop()
 ```
-
----
-
-## 📁 Repository Layout
-
-- `visual_ai/`: Main Python library SDK package.
-- `cpp/`: C++ high-performance engine implementation and `pybind11` bridge.
-- `examples/`: Ready-to-run demo scripts for game developers.
-- `setup.py`: Build and package installation script.
 
 ---
 
