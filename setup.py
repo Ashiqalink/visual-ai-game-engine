@@ -11,7 +11,7 @@ ext_modules = [
 
 setup(
     name="visual_ai",
-    version="0.1.0",
+    version="0.2.0",
     author="Visual AI Game Engine Developers",
     description="High-performance Computer Vision AI tracking and physics library for game developers",
     package_dir={"": "src"},

@@ -36,6 +36,8 @@ import time
 import cv2
 import numpy as np
 
+from visual_ai.noise_filter import PipelineNoiseFilter
+
 # ── Optional MediaPipe imports ────────────────────────────────────────────────
 HAS_MEDIAPIPE = False
 mp_face_detection_module = None
@@ -75,9 +77,10 @@ _PINCH_DEBOUNCE       = 3      # consecutive frames needed to toggle pinch state
 
 # Z-push click
 _Z_HISTORY_LEN       = 10      # rolling window size (frames)
-_Z_CLICK_THRESHOLD   = 0.055   # minimum Z delta to count as a push (~2 inch deliberate push)
+_Z_CLICK_THRESHOLD   = 0.012   # minimum Z delta to count as a push (~0.5 inch deliberate push)
+_Z_PUSH_DETECT_THRESH= 0.008   # z_delta threshold above which forward push is active
 _Z_CLICK_XY_MAX_PX   = 30      # max lateral drift allowed during push (px)
-_Z_COOLDOWN_FRAMES   = 40      # frames before another click can fire (~1.3 s at 30 fps)
+_Z_COOLDOWN_FRAMES   = 25      # frames before another click can fire (~0.8 s at 30 fps)
 
 
 def _dist2d(p1, p2) -> float:
@@ -115,6 +118,11 @@ class _GestureState:
         self.locked_pos: tuple[float, float] | None = None
         self.lost_frames: int = 0
 
+        # 3-Finger Lock & Pinch state
+        self.lock_progress: float = 0.0          # 0.0 to 1.0
+        self.three_finger_locked: bool = False   # True when lock_progress reaches 1.0
+        self.was_3_pinching: bool = False        # Edge trigger for 3-finger pinch
+
     def reset(self):
         self.smooth_ix = self.smooth_iy = -1.0
         self.smooth_px = self.smooth_py = -1.0
@@ -125,6 +133,9 @@ class _GestureState:
         self.z_start_xy = None
         self.locked_pos = None
         self.lost_frames = 0
+        self.lock_progress = 0.0
+        self.three_finger_locked = False
+        self.was_3_pinching = False
 
 
 # ── VisionPipeline ─────────────────────────────────────────────────────────────
@@ -153,6 +164,8 @@ class VisionPipeline(threading.Thread):
         height: int = 600,
         camera_index: int = 0,
         smooth_alpha: float = 0.20,
+        movement_magnification: float = 2.0,
+        noise_duration: float = 0.0,
     ):
         super().__init__(daemon=True)
         self.result_queue  = result_queue
@@ -160,6 +173,8 @@ class VisionPipeline(threading.Thread):
         self.height        = height
         self.camera_index  = camera_index
         self.smooth_alpha  = smooth_alpha
+        self.movement_magnification = movement_magnification
+        self.noise_filter  = PipelineNoiseFilter(noise_duration=noise_duration)
         self.running       = False
 
         # ── ToF (Time-of-Flight) Depth Sensor State ───────────────────────────
@@ -194,6 +209,18 @@ class VisionPipeline(threading.Thread):
 
         # ── Gesture state ─────────────────────────────────────────────────────
         self._gs = _GestureState()
+
+    def set_movement_magnification(self, mag: float):
+        """Dynamically update movement magnification factor for input tracking and gesture pinch scaling."""
+        self.movement_magnification = max(0.5, float(mag))
+
+    def set_noise_duration(self, duration: float):
+        """Dynamically update noise filter window duration in seconds."""
+        self.noise_filter.filter.set_duration(duration)
+
+    def reset_noise_filter(self):
+        """Reset noise filter timing window for state changes / restarts."""
+        self.noise_filter.reset()
 
     # ── Thread entry ──────────────────────────────────────────────────────────
     def run(self):
@@ -238,6 +265,9 @@ class VisionPipeline(threading.Thread):
                 )
                 payload = self._empty_payload(target_x, target_y, dummy)
                 time.sleep(0.033)
+
+            # Apply Noise Filter to suppress transient clicks/pinches during warmup window
+            payload = self.noise_filter.process_payload(payload)
 
             if not self.result_queue.full():
                 self.result_queue.put(payload)
@@ -356,62 +386,90 @@ class VisionPipeline(threading.Thread):
         raw_iy = lm[8].y * H
         raw_tx = lm[4].x * W   # thumb tip
         raw_ty = lm[4].y * H
+        raw_mx = lm[12].x * W  # middle tip
+        raw_my = lm[12].y * H
+
+        thumb_pos  = (round(raw_tx), round(raw_ty))
+        index_pos  = (round(raw_ix), round(raw_iy))
+        middle_pos = (round(raw_mx), round(raw_my))
+
+        # Centroid of the 3 fingers
+        c_x = (raw_tx + raw_ix + raw_mx) / 3.0
+        c_y = (raw_ty + raw_iy + raw_my) / 3.0
+        centroid_pos = (round(c_x), round(c_y))
 
         # EMA smoothing (bootstrap on first frame)
         if gs.smooth_ix < 0:
             gs.smooth_ix = raw_ix;  gs.smooth_iy = raw_iy
-            gs.smooth_px = (raw_ix + raw_tx) / 2
-            gs.smooth_py = (raw_iy + raw_ty) / 2
+            gs.smooth_px = c_x
+            gs.smooth_py = c_y
 
-        # ── 2. Z-Push Click ───────────────────────────────────────────────────
-        z_val = lm[8].z   # MediaPipe Z: more negative = closer to camera
-        click_fired, z_delta, xy_drift = self._detect_z_click(z_val, (round(gs.smooth_ix), round(gs.smooth_iy)))
+        z_val = lm[8].z   # MediaPipe Z
+        # ── 2. Z-Push Click (DISABLED / COMMENTED OUT as per user instruction) ──
+        # click_fired, z_delta, xy_drift = self._detect_z_click(z_val, (round(gs.smooth_ix), round(gs.smooth_iy)))
+        click_fired = False
+        z_delta = 0.0
+        xy_drift = 0.0
 
-        # Dynamic adaptive EMA alpha: scale based on movement velocity to filter micro jitter while keeping speed
+        # Dynamic adaptive EMA alpha: scale based on movement velocity
         d_dist = math.sqrt((raw_ix - gs.smooth_ix) ** 2 + (raw_iy - gs.smooth_iy) ** 2)
         scale = max(0.0, min(1.0, (d_dist - 2.0) / 20.0))
         min_alpha = min(0.10, self.smooth_alpha)
         a = min_alpha + scale * (self.smooth_alpha - min_alpha)
 
-        # Heavily dampen X/Y updates if z_delta > 0.015 (active forward push)
-        if z_delta > 0.015:
-            a = 0.02
-
         gs.smooth_ix = _ema(raw_ix, gs.smooth_ix, a)
         gs.smooth_iy = _ema(raw_iy, gs.smooth_iy, a)
-        raw_px = (raw_ix + raw_tx) / 2
-        raw_py = (raw_iy + raw_ty) / 2
-        gs.smooth_px = _ema(raw_px, gs.smooth_px, a)
-        gs.smooth_py = _ema(raw_py, gs.smooth_py, a)
+        gs.smooth_px = _ema(c_x, gs.smooth_px, a)
+        gs.smooth_py = _ema(c_y, gs.smooth_py, a)
 
         index_pos = (round(gs.smooth_ix), round(gs.smooth_iy))
         pinch_pos = (round(gs.smooth_px), round(gs.smooth_py))
 
-        # ── 1. Pinch Detection ────────────────────────────────────────────────
-        # Normalised 3-D distance — invariant to hand-camera distance
-        pinch_dist_norm = math.sqrt(
-            (lm[4].x - lm[8].x) ** 2 +
-            (lm[4].y - lm[8].y) ** 2 +
-            (lm[4].z - lm[8].z) ** 2 * 0.5   # Z weighted down (noisier)
-        )
-        
-        # Hysteresis: use different thresholds depending on current state
-        if gs.pinch_active:
-            raw_pinching = pinch_dist_norm < _PINCH_EXIT_THRESHOLD
-        else:
-            raw_pinching = pinch_dist_norm < _PINCH_ENTER_THRESHOLD
+        # ── 1. 2-Finger Pinch (DISABLED / COMMENTED OUT as per user instruction) ──
+        # pinch_dist_norm = math.sqrt(...)
+        # gs.pinch_active = ...
+        # (Disabled in favor of 3-finger lock & pinch)
 
-        # Debounce: require N consecutive frames before toggling
-        if raw_pinching:
-            gs.pinch_consec += 1
-            gs.release_consec = 0
-            if gs.pinch_consec >= _PINCH_DEBOUNCE:
-                gs.pinch_active = True
+        # ── 3-Finger Lock System & 3-Finger Pinch Trigger ────────────────────
+        d_ti = math.sqrt((raw_tx - raw_ix)**2 + (raw_ty - raw_iy)**2)
+        d_tm = math.sqrt((raw_tx - raw_mx)**2 + (raw_ty - raw_my)**2)
+        d_im = math.sqrt((raw_ix - raw_mx)**2 + (raw_iy - raw_my)**2)
+
+        # User must keep fingers distinct (separated) to build lock progress slowly
+        distinct = (d_ti > 45.0) and (d_tm > 45.0) and (d_im > 45.0)
+
+        # Distance from each fingertip to centroid
+        dist_t_c = math.sqrt((raw_tx - c_x)**2 + (raw_ty - c_y)**2)
+        dist_i_c = math.sqrt((raw_ix - c_x)**2 + (raw_iy - c_y)**2)
+        dist_m_c = math.sqrt((raw_mx - c_x)**2 + (raw_my - c_y)**2)
+        max_dist_to_centroid = max(dist_t_c, dist_i_c, dist_m_c)
+
+        base_pinch_radius = 55.0
+        effective_pinch_radius = base_pinch_radius * max(1.0, float(self.movement_magnification))
+        is_3_pinching = max_dist_to_centroid < effective_pinch_radius
+
+        if distinct:
+            # Increment lock progress slowly (~40 frames / ~1.3s for testing phase)
+            gs.lock_progress = min(1.0, gs.lock_progress + 0.025)
+        elif not is_3_pinching and not gs.three_finger_locked:
+            # Decay lock progress if not distinct and not locked
+            gs.lock_progress = max(0.0, gs.lock_progress - 0.04)
+
+        if gs.lock_progress >= 1.0:
+            gs.three_finger_locked = True
+
+        thumb_locked  = gs.lock_progress >= 0.33
+        index_locked  = gs.lock_progress >= 0.66
+        middle_locked = gs.lock_progress >= 1.0
+
+        # Trigger action when all 3 fingers are locked AND user pinches all 3 to middle
+        if gs.three_finger_locked:
+            if is_3_pinching and not gs.was_3_pinching:
+                click_fired = True
+            gs.was_3_pinching = is_3_pinching
+            gs.pinch_active = is_3_pinching
         else:
-            gs.release_consec += 1
-            gs.pinch_consec = 0
-            if gs.release_consec >= _PINCH_DEBOUNCE:
-                gs.pinch_active = False
+            gs.pinch_active = False
 
         # ── 3. Index Isolation ────────────────────────────────────────────────
         # Uses landmark 9 (middle MCP) as a stable palm anchor.
@@ -437,17 +495,23 @@ class VisionPipeline(threading.Thread):
         tof_active, tof_z_m, depth_source = self.sample_tof_depth(index_pos[0], index_pos[1], z_val)
 
         return {
-            "hand_visible":      True,
-            "index_pos":         index_pos,
-            "pinch_pos":         pinch_pos,
-            "is_pinching":       gs.pinch_active,
-            "click_just_fired":  click_fired,
-            "is_index_isolated": is_isolated,
-            "z_delta":           z_delta,
-            "xy_drift":          xy_drift,
-            "tof_active":        tof_active,
-            "tof_z_m":           tof_z_m,
-            "depth_source":      depth_source,
+            "hand_visible":        True,
+            "index_pos":           index_pos,
+            "thumb_pos":           thumb_pos,
+            "middle_pos":          middle_pos,
+            "pinch_pos":           centroid_pos,
+            "is_pinching":         gs.pinch_active,
+            "click_just_fired":    click_fired,
+            "is_index_isolated":   is_isolated,
+            "z_delta":             z_delta,
+            "xy_drift":            xy_drift,
+            "tof_active":          tof_active,
+            "tof_z_m":             tof_z_m,
+            "depth_source":        depth_source,
+            "lock_progress":       gs.lock_progress,
+            "three_finger_locked": gs.three_finger_locked,
+            "locked_fingers":      (thumb_locked, index_locked, middle_locked),
+            "is_3_finger_pinching":is_3_pinching,
         }
 
     # ── ToF Depth Probe & Sampling ─────────────────────────────────────────────

@@ -125,8 +125,8 @@ def main():
                 frame_count = 0
                 fps_timer = now
 
-            # 4. Render visual overlay
-            render_canvas = current_frame.copy()
+            # 4. Render visual overlay (draw directly on current_frame, no redundant copy)
+            render_canvas = current_frame
 
             # Draw AI Target (Crosshair)
             tx, ty = int(engine.get_target_x()), int(engine.get_target_y())
