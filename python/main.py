@@ -35,6 +35,14 @@ except ImportError as e:
         def set_target_position(self, x, y):
             self.target_x = x
             self.target_y = y
+            
+        def set_gravity(self, g): self.gravity = g
+        def get_gravity(self): return self.gravity
+        def set_radius(self, r): self.radius = r
+        def get_radius(self): return self.radius
+        def set_velocity(self, vx, vy):
+            self.vx = vx
+            self.vy = vy
 
         def update(self, dt):
             self.vy += self.gravity * dt

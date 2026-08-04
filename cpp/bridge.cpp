@@ -18,5 +18,10 @@ PYBIND11_MODULE(engine_core, m) {
         .def("get_target_x", &GameEngine::get_target_x)
         .def("get_target_y", &GameEngine::get_target_y)
         .def("get_width", &GameEngine::get_width)
-        .def("get_height", &GameEngine::get_height);
+        .def("get_height", &GameEngine::get_height)
+        .def("set_gravity", &GameEngine::set_gravity, py::arg("g"))
+        .def("get_gravity", &GameEngine::get_gravity)
+        .def("set_radius", &GameEngine::set_radius, py::arg("r"))
+        .def("get_radius", &GameEngine::get_radius)
+        .def("set_velocity", &GameEngine::set_velocity, py::arg("vx"), py::arg("vy"));
 }

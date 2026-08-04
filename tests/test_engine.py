@@ -1,6 +1,5 @@
 import unittest
-import math
-from visual_ai import GameEngine, PythonFallbackEngine, CPP_ENGINE_AVAILABLE
+from visual_ai import GameEngine, PythonFallbackEngine, Material, Entity, ShaderType
 
 
 class TestGameEngine(unittest.TestCase):
@@ -28,8 +27,27 @@ class TestGameEngine(unittest.TestCase):
         """Test position update over time step dt."""
         initial_y = self.engine.get_y()
         self.engine.update(0.016)  # 16ms frame step
-        # Position should change due to gravity and velocity
         self.assertNotEqual(self.engine.get_y(), initial_y)
+
+    def test_entity_management_and_materials(self):
+        """Test adding general entities with PBR materials."""
+        gold_mat = Material.preset("gold")
+        
+        # Test Python fallback engine entity adding
+        ent_fb = self.fallback.add_entity("PlayerTarget", x=100.0, y=200.0, z=0.0, material=gold_mat)
+        self.assertEqual(ent_fb.name, "PlayerTarget")
+        self.assertEqual(ent_fb.material.name, "Gold")
+        self.assertEqual(len(self.fallback.get_entities()), 1)
+
+        # Test updating fallback engine with entity velocity
+        ent_fb.vx = 50.0
+        self.fallback.update(1.0)
+        self.assertEqual(ent_fb.x, 150.0)
+
+        # Test C++ engine or active backend
+        self.engine.add_entity("Obstacle", x=50.0, y=50.0, w=10.0, h=10.0, material=gold_mat)
+        entities = self.engine.get_entities()
+        self.assertEqual(len(entities), 1)
 
     def test_boundary_constraints(self):
         """Test that physics object stays within window boundaries over multiple frames."""

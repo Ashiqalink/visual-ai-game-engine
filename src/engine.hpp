@@ -2,8 +2,44 @@
 #define ENGINE_HPP
 
 #include <vector>
+#include <string>
 
 namespace vision_engine {
+
+enum class ShaderType {
+    PBR_Standard = 0,
+    Unlit,
+    Transparent,
+    Phong,
+    Custom
+};
+
+struct Material {
+    std::string name = "DefaultMaterial";
+    ShaderType shader_type = ShaderType::PBR_Standard;
+    float base_color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    std::string normal_map = "";
+    float roughness = 0.5f;
+    float metallic = 0.0f;
+    float emission[3] = {0.0f, 0.0f, 0.0f};
+    float opacity = 1.0f;
+};
+
+struct Entity {
+    int id = 0;
+    std::string name = "Entity";
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float vx = 0.0f;
+    float vy = 0.0f;
+    float vz = 0.0f;
+    float width = 1.0f;
+    float height = 1.0f;
+    float depth = 1.0f;
+    bool active = true;
+    Material material;
+};
 
 struct Block {
     float x;
@@ -13,6 +49,7 @@ struct Block {
     float health;
     float max_health;
     bool active;
+    Material material;
 };
 
 struct Debris {
@@ -24,6 +61,7 @@ struct Debris {
     float height;
     float lifespan;
     bool active;
+    Material material;
 };
 
 class GameEngine {
@@ -33,7 +71,16 @@ public:
     void update(float dt);
     void set_target_position(float x, float y);
     
-    void add_block(float x, float y, float w, float h, float health);
+    // General Entity Management
+    int add_entity(std::string name = "Entity", float x = 0.0f, float y = 0.0f, float z = 0.0f,
+                   float vx = 0.0f, float vy = 0.0f, float vz = 0.0f,
+                   float w = 1.0f, float h = 1.0f, float d = 1.0f,
+                   Material mat = Material());
+    const std::vector<Entity>& get_entities() const { return m_entities; }
+    void clear_entities();
+
+    // Legacy Block & Debris Management
+    void add_block(float x, float y, float w, float h, float health, Material mat = Material());
     const std::vector<Block>& get_blocks() const { return m_blocks; }
     const std::vector<Debris>& get_debris() const { return m_debris; }
     void clear_blocks();
@@ -61,6 +108,8 @@ private:
     float m_target_x;
     float m_target_y;
 
+    int m_next_entity_id = 1;
+    std::vector<Entity> m_entities;
     std::vector<Block> m_blocks;
     std::vector<Debris> m_debris;
 };

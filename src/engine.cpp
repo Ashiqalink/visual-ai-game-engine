@@ -17,8 +17,21 @@ void GameEngine::set_target_position(float x, float y) {
     m_target_y = y;
 }
 
-void GameEngine::add_block(float x, float y, float w, float h, float health) {
-    m_blocks.push_back({x, y, w, h, health, health, true});
+int GameEngine::add_entity(std::string name, float x, float y, float z,
+                           float vx, float vy, float vz,
+                           float w, float h, float d,
+                           Material mat) {
+    int id = m_next_entity_id++;
+    m_entities.push_back({id, name, x, y, z, vx, vy, vz, w, h, d, true, mat});
+    return id;
+}
+
+void GameEngine::clear_entities() {
+    m_entities.clear();
+}
+
+void GameEngine::add_block(float x, float y, float w, float h, float health, Material mat) {
+    m_blocks.push_back({x, y, w, h, health, health, true, mat});
 }
 
 void GameEngine::clear_blocks() {
@@ -63,6 +76,14 @@ void GameEngine::update(float dt) {
     } else if (m_y + m_radius > m_height) {
         m_y = m_height - m_radius;
         m_vy = -m_vy * 0.8f;
+    }
+
+    // Update general entities
+    for (auto& entity : m_entities) {
+        if (!entity.active) continue;
+        entity.x += entity.vx * dt;
+        entity.y += entity.vy * dt;
+        entity.z += entity.vz * dt;
     }
 
     // Block collisions
@@ -117,7 +138,8 @@ void GameEngine::update(float dt) {
                                         dvx, dvy,
                                         dw, dh,
                                         3.0f, // 3 seconds lifespan
-                                        true
+                                        true,
+                                        block.material
                                     });
                                 }
                             }

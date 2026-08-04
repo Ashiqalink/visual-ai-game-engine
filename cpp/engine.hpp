@@ -17,6 +17,14 @@ public:
     float get_width() const { return m_width; }
     float get_height() const { return m_height; }
 
+    void set_gravity(float g) { m_gravity = g; }
+    float get_gravity() const { return m_gravity; }
+    
+    void set_radius(float r) { m_radius = r; }
+    float get_radius() const { return m_radius; }
+    
+    void set_velocity(float vx, float vy) { m_vx = vx; m_vy = vy; }
+
 private:
     float m_width;
     float m_height;

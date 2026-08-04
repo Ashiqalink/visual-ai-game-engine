@@ -210,6 +210,9 @@ class VisionPipeline(threading.Thread):
         # ── Gesture state ─────────────────────────────────────────────────────
         self._gs = _GestureState()
 
+        # ── Pre-allocated frame buffer ─────────────────────────────────────────
+        self._rgb_buf = np.empty((self.height, self.width, 3), dtype=np.uint8)
+
     def set_movement_magnification(self, mag: float):
         """Dynamically update movement magnification factor for input tracking and gesture pinch scaling."""
         self.movement_magnification = max(0.5, float(mag))
@@ -436,7 +439,7 @@ class VisionPipeline(threading.Thread):
         d_im = math.sqrt((raw_ix - raw_mx)**2 + (raw_iy - raw_my)**2)
 
         # User must keep fingers distinct (separated) to build lock progress slowly
-        distinct = (d_ti > 45.0) and (d_tm > 45.0) and (d_im > 45.0)
+        distinct = (d_ti > 30.0) and (d_tm > 30.0) and (d_im > 30.0)
 
         # Distance from each fingertip to centroid
         dist_t_c = math.sqrt((raw_tx - c_x)**2 + (raw_ty - c_y)**2)

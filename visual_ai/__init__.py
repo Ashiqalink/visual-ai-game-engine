@@ -4,7 +4,8 @@ High-performance computer vision and AI physics tracking SDK for game developers
 """
 
 from visual_ai.pipeline import VisionPipeline
-from visual_ai.fallback_engine import PythonFallbackEngine
+from visual_ai.fallback_engine import PythonFallbackEngine, Entity
+from visual_ai.material import Material, ShaderType
 from visual_ai.noise_filter import NoiseFilter, FilteredGestureDetector, PipelineNoiseFilter
 
 try:
@@ -24,5 +25,7 @@ __all__ = [
     "NoiseFilter",
     "FilteredGestureDetector",
     "PipelineNoiseFilter",
+    "Material",
+    "ShaderType",
+    "Entity",
 ]
-
