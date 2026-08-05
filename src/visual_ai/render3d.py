@@ -261,6 +261,123 @@ class Mesh3D:
 
         return cls(vertices=np.array(verts, dtype=np.float64), faces=faces)
 
+    @classmethod
+    def create_capsule(cls, radius: float = 20.0, height: float = 40.0, rings: int = 6, sectors: int = 12) -> "Mesh3D":
+        """Create a 3D Capsule (pill-shaped) character mesh."""
+        verts = []
+        faces = []
+        half_h = height / 2.0
+
+        # Hemisphere tops and bottoms
+        R = 1.0 / float(rings - 1)
+        S = 1.0 / float(sectors - 1)
+
+        for r in range(rings):
+            v_lat = r * R  # 0 to 1
+            lat = -math.pi / 2 + math.pi * v_lat
+            y_offset = half_h if lat >= 0 else -half_h
+            for s in range(sectors):
+                y = math.sin(lat) * radius + y_offset
+                x = math.cos(2 * math.pi * s * S) * math.cos(lat) * radius
+                z = math.sin(2 * math.pi * s * S) * math.cos(lat) * radius
+                verts.append([x, y, z])
+
+        for r in range(rings - 1):
+            for s in range(sectors - 1):
+                i1 = r * sectors + s
+                i2 = r * sectors + (s + 1)
+                i3 = (r + 1) * sectors + (s + 1)
+                i4 = (r + 1) * sectors + s
+                faces.append([i1, i2, i3, i4])
+
+        return cls(vertices=np.array(verts, dtype=np.float64), faces=faces)
+
+    @classmethod
+    def create_torus(cls, ring_radius: float = 30.0, tube_radius: float = 10.0, ring_segments: int = 16, tube_segments: int = 8) -> "Mesh3D":
+        """Create a 3D Torus (ring) character mesh."""
+        verts = []
+        faces = []
+
+        for i in range(ring_segments):
+            u = 2.0 * math.pi * i / ring_segments
+            cos_u, sin_u = math.cos(u), math.sin(u)
+            for j in range(tube_segments):
+                v = 2.0 * math.pi * j / tube_segments
+                cos_v, sin_v = math.cos(v), math.sin(v)
+
+                x = (ring_radius + tube_radius * cos_v) * cos_u
+                y = tube_radius * sin_v
+                z = (ring_radius + tube_radius * cos_v) * sin_u
+                verts.append([x, y, z])
+
+        for i in range(ring_segments):
+            next_i = (i + 1) % ring_segments
+            for j in range(tube_segments):
+                next_j = (j + 1) % tube_segments
+                idx1 = i * tube_segments + j
+                idx2 = next_i * tube_segments + j
+                idx3 = next_i * tube_segments + next_j
+                idx4 = i * tube_segments + next_j
+                faces.append([idx1, idx2, idx3, idx4])
+
+        return cls(vertices=np.array(verts, dtype=np.float64), faces=faces)
+
+    @classmethod
+    def create_prism(cls, width: float = 40.0, height: float = 40.0, depth: float = 40.0) -> "Mesh3D":
+        """Create a 3D Triangular Prism character mesh."""
+        w = width / 2.0
+        h = height / 2.0
+        d = depth / 2.0
+
+        verts = np.array([
+            [-w, -h, -d], [w, -h, -d], [0, h, -d],  # Front triangle
+            [-w, -h,  d], [w, -h,  d], [0, h,  d],  # Back triangle
+        ], dtype=np.float64)
+
+        faces = [
+            [0, 1, 2],        # Front
+            [5, 4, 3],        # Back
+            [0, 3, 4, 1],     # Bottom
+            [1, 4, 5, 2],     # Right slant
+            [2, 5, 3, 0],     # Left slant
+        ]
+        return cls(vertices=verts, faces=faces)
+
+    @classmethod
+    def create_icosahedron(cls, radius: float = 30.0) -> "Mesh3D":
+        """Create a 3D Icosahedron (polyhedral sphere) character mesh."""
+        t = (1.0 + math.sqrt(5.0)) / 2.0
+        verts = np.array([
+            [-1,  t,  0], [ 1,  t,  0], [-1, -t,  0], [ 1, -t,  0],
+            [ 0, -1,  t], [ 0,  1,  t], [ 0, -1, -t], [ 0,  1, -t],
+            [ t,  0, -1], [ t,  0,  1], [-t,  0, -1], [-t,  0,  1]
+        ], dtype=np.float64)
+
+        # Scale to target radius
+        norms = np.linalg.norm(verts, axis=1, keepdims=True)
+        verts = (verts / norms) * radius
+
+        faces = [
+            [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+            [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+            [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+            [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]
+        ]
+        return cls(vertices=verts, faces=faces)
+
+    def apply_extrusion_depth(self, depth_factor: float = 1.0) -> "Mesh3D":
+        """Scale Z-axis vertices by depth_factor to adjust 3D extrusion thickness."""
+        new_verts = self.vertices.copy()
+        new_verts[:, 2] *= float(depth_factor)
+        return Mesh3D(vertices=new_verts, faces=self.faces, normals=self.normals)
+
+    def scale_non_uniform(self, sx: float = 1.0, sy: float = 1.0, sz: float = 1.0) -> "Mesh3D":
+        """Apply non-uniform 3D scaling to mesh vertices."""
+        new_verts = self.vertices.copy()
+        new_verts *= np.array([sx, sy, sz], dtype=np.float64)
+        return Mesh3D(vertices=new_verts, faces=self.faces, normals=self.normals)
+
+
 
 class Renderer3D:
     """
@@ -310,8 +427,15 @@ class Renderer3D:
         render_faces.sort(key=lambda item: item[0], reverse=True)
 
         # 4. Render faces onto frame
+        frame_h, frame_w = frame.shape[:2]
         for avg_depth, face_indices in render_faces:
             pts = screen_coords[face_indices].astype(np.int32)
+
+            # Backface culling in 2D screen space (skip polygons wound counter-clockwise / facing away)
+            if len(pts) >= 3:
+                cross_z = (pts[1][0] - pts[0][0]) * (pts[2][1] - pts[0][1]) - (pts[1][1] - pts[0][1]) * (pts[2][0] - pts[0][0])
+                if cross_z <= 0:
+                    continue
 
             if wireframe:
                 cv2.polylines(frame, [pts], isClosed=True, color=bgr, thickness=1, lineType=cv2.LINE_AA)
@@ -331,8 +455,9 @@ class Renderer3D:
                     else:
                         normal = np.array([0.0, 0.0, 1.0])
 
-                    # Directional diffuse lighting
-                    intensity = max(0.2, float(np.dot(normal, self.light_dir)))
+                    # Directional diffuse lighting with ambient floor for vibrant material visibility
+                    dot_val = abs(float(np.dot(normal, self.light_dir)))
+                    intensity = max(0.55, min(1.0, 0.45 + 0.55 * dot_val))
                 else:
                     intensity = 1.0
 
@@ -343,9 +468,16 @@ class Renderer3D:
                 )
 
                 if material.opacity < 0.99:
-                    overlay = frame.copy()
-                    cv2.fillPoly(overlay, [pts], shaded_bgr, lineType=cv2.LINE_AA)
-                    cv2.addWeighted(overlay, material.opacity, frame, 1.0 - material.opacity, 0, frame)
+                    min_x = max(0, int(pts[:, 0].min()))
+                    max_x = min(frame_w, int(pts[:, 0].max()) + 1)
+                    min_y = max(0, int(pts[:, 1].min()))
+                    max_y = min(frame_h, int(pts[:, 1].max()) + 1)
+                    if max_x > min_x and max_y > min_y:
+                        sub_pts = pts - np.array([min_x, min_y], dtype=np.int32)
+                        roi = frame[min_y:max_y, min_x:max_x]
+                        overlay = roi.copy()
+                        cv2.fillPoly(overlay, [sub_pts], shaded_bgr, lineType=cv2.LINE_AA)
+                        cv2.addWeighted(overlay, material.opacity, roi, 1.0 - material.opacity, 0, roi)
                 else:
                     cv2.fillPoly(frame, [pts], shaded_bgr, lineType=cv2.LINE_AA)
                     cv2.polylines(frame, [pts], isClosed=True, color=(20, 20, 20), thickness=1, lineType=cv2.LINE_AA)

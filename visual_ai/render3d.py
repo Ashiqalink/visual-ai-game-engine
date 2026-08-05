@@ -310,8 +310,15 @@ class Renderer3D:
         render_faces.sort(key=lambda item: item[0], reverse=True)
 
         # 4. Render faces onto frame
+        frame_h, frame_w = frame.shape[:2]
         for avg_depth, face_indices in render_faces:
             pts = screen_coords[face_indices].astype(np.int32)
+
+            # Backface culling in 2D screen space (skip polygons wound counter-clockwise / facing away)
+            if len(pts) >= 3:
+                cross_z = (pts[1][0] - pts[0][0]) * (pts[2][1] - pts[0][1]) - (pts[1][1] - pts[0][1]) * (pts[2][0] - pts[0][0])
+                if cross_z <= 0:
+                    continue
 
             if wireframe:
                 cv2.polylines(frame, [pts], isClosed=True, color=bgr, thickness=1, lineType=cv2.LINE_AA)
@@ -331,8 +338,9 @@ class Renderer3D:
                     else:
                         normal = np.array([0.0, 0.0, 1.0])
 
-                    # Directional diffuse lighting
-                    intensity = max(0.2, float(np.dot(normal, self.light_dir)))
+                    # Directional diffuse lighting with ambient floor for vibrant material visibility
+                    dot_val = abs(float(np.dot(normal, self.light_dir)))
+                    intensity = max(0.55, min(1.0, 0.45 + 0.55 * dot_val))
                 else:
                     intensity = 1.0
 
@@ -343,9 +351,16 @@ class Renderer3D:
                 )
 
                 if material.opacity < 0.99:
-                    overlay = frame.copy()
-                    cv2.fillPoly(overlay, [pts], shaded_bgr, lineType=cv2.LINE_AA)
-                    cv2.addWeighted(overlay, material.opacity, frame, 1.0 - material.opacity, 0, frame)
+                    min_x = max(0, int(pts[:, 0].min()))
+                    max_x = min(frame_w, int(pts[:, 0].max()) + 1)
+                    min_y = max(0, int(pts[:, 1].min()))
+                    max_y = min(frame_h, int(pts[:, 1].max()) + 1)
+                    if max_x > min_x and max_y > min_y:
+                        sub_pts = pts - np.array([min_x, min_y], dtype=np.int32)
+                        roi = frame[min_y:max_y, min_x:max_x]
+                        overlay = roi.copy()
+                        cv2.fillPoly(overlay, [sub_pts], shaded_bgr, lineType=cv2.LINE_AA)
+                        cv2.addWeighted(overlay, material.opacity, roi, 1.0 - material.opacity, 0, roi)
                 else:
                     cv2.fillPoly(frame, [pts], shaded_bgr, lineType=cv2.LINE_AA)
                     cv2.polylines(frame, [pts], isClosed=True, color=(20, 20, 20), thickness=1, lineType=cv2.LINE_AA)

@@ -1,7 +1,7 @@
 import numpy as np
 from dataclasses import dataclass, field
 import random
-from typing import List, Optional
+from typing import List, Optional, Any
 from visual_ai.material import Material
 
 
