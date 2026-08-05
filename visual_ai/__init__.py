@@ -7,6 +7,7 @@ from visual_ai.pipeline import VisionPipeline
 from visual_ai.fallback_engine import PythonFallbackEngine, Entity
 from visual_ai.material import Material, ShaderType
 from visual_ai.noise_filter import NoiseFilter, FilteredGestureDetector, PipelineNoiseFilter
+from visual_ai.render3d import Transform3D, Camera3D, Mesh3D, Renderer3D
 
 try:
     import engine_core
@@ -28,4 +29,8 @@ __all__ = [
     "Material",
     "ShaderType",
     "Entity",
+    "Transform3D",
+    "Camera3D",
+    "Mesh3D",
+    "Renderer3D",
 ]

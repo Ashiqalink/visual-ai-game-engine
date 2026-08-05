@@ -13,14 +13,22 @@ class Entity:
     x: float = 0.0
     y: float = 0.0
     z: float = 0.0
+    rx: float = 0.0
+    ry: float = 0.0
+    rz: float = 0.0
     vx: float = 0.0
     vy: float = 0.0
     vz: float = 0.0
+    vrx: float = 0.0
+    vry: float = 0.0
+    vrz: float = 0.0
     width: float = 1.0
     height: float = 1.0
     depth: float = 1.0
     active: bool = True
     material: Material = field(default_factory=Material)
+    mesh: Optional[Any] = None
+
 
 
 @dataclass
@@ -111,6 +119,54 @@ class PythonFallbackEngine:
         self.entities.append(entity)
         return entity
 
+    def add_3d_element(
+        self,
+        name: str = "3DElement",
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        rx: float = 0.0,
+        ry: float = 0.0,
+        rz: float = 0.0,
+        vx: float = 0.0,
+        vy: float = 0.0,
+        vz: float = 0.0,
+        vrx: float = 0.0,
+        vry: float = 0.0,
+        vrz: float = 0.0,
+        scale: float = 1.0,
+        material: Optional[Material] = None,
+        mesh: Optional[Any] = None,
+    ) -> Entity:
+        """Add a 3D Element entity to the engine scene."""
+        ent_id = self._next_entity_id
+        self._next_entity_id += 1
+        mat = material if material is not None else Material()
+        entity = Entity(
+            id=ent_id,
+            name=name,
+            x=x,
+            y=y,
+            z=z,
+            rx=rx,
+            ry=ry,
+            rz=rz,
+            vx=vx,
+            vy=vy,
+            vz=vz,
+            vrx=vrx,
+            vry=vry,
+            vrz=vrz,
+            width=scale,
+            height=scale,
+            depth=scale,
+            active=True,
+            material=mat,
+            mesh=mesh,
+        )
+        self.entities.append(entity)
+        return entity
+
     def get_entities(self) -> List[Entity]:
         """Get all active entities in the engine."""
         return self.entities
@@ -168,6 +224,9 @@ class PythonFallbackEngine:
             entity.x += entity.vx * dt
             entity.y += entity.vy * dt
             entity.z += entity.vz * dt
+            entity.rx = (entity.rx + entity.vrx * dt) % 360.0
+            entity.ry = (entity.ry + entity.vry * dt) % 360.0
+            entity.rz = (entity.rz + entity.vrz * dt) % 360.0
 
         # Block collisions (legacy support)
         for block in self.blocks:

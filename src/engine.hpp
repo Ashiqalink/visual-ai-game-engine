@@ -31,9 +31,15 @@ struct Entity {
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
+    float rx = 0.0f;
+    float ry = 0.0f;
+    float rz = 0.0f;
     float vx = 0.0f;
     float vy = 0.0f;
     float vz = 0.0f;
+    float vrx = 0.0f;
+    float vry = 0.0f;
+    float vrz = 0.0f;
     float width = 1.0f;
     float height = 1.0f;
     float depth = 1.0f;
@@ -76,6 +82,11 @@ public:
                    float vx = 0.0f, float vy = 0.0f, float vz = 0.0f,
                    float w = 1.0f, float h = 1.0f, float d = 1.0f,
                    Material mat = Material());
+    int add_3d_element(std::string name = "3DElement", float x = 0.0f, float y = 0.0f, float z = 0.0f,
+                       float rx = 0.0f, float ry = 0.0f, float rz = 0.0f,
+                       float vx = 0.0f, float vy = 0.0f, float vz = 0.0f,
+                       float vrx = 0.0f, float vry = 0.0f, float vrz = 0.0f,
+                       float scale = 1.0f, Material mat = Material());
     const std::vector<Entity>& get_entities() const { return m_entities; }
     void clear_entities();
 

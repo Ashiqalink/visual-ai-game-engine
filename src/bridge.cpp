@@ -41,9 +41,15 @@ PYBIND11_MODULE(engine_core, m) {
         .def_readwrite("x", &Entity::x)
         .def_readwrite("y", &Entity::y)
         .def_readwrite("z", &Entity::z)
+        .def_readwrite("rx", &Entity::rx)
+        .def_readwrite("ry", &Entity::ry)
+        .def_readwrite("rz", &Entity::rz)
         .def_readwrite("vx", &Entity::vx)
         .def_readwrite("vy", &Entity::vy)
         .def_readwrite("vz", &Entity::vz)
+        .def_readwrite("vrx", &Entity::vrx)
+        .def_readwrite("vry", &Entity::vry)
+        .def_readwrite("vrz", &Entity::vrz)
         .def_readwrite("width", &Entity::width)
         .def_readwrite("height", &Entity::height)
         .def_readwrite("depth", &Entity::depth)
@@ -82,6 +88,14 @@ PYBIND11_MODULE(engine_core, m) {
              py::arg("x") = 0.0f, py::arg("y") = 0.0f, py::arg("z") = 0.0f,
              py::arg("vx") = 0.0f, py::arg("vy") = 0.0f, py::arg("vz") = 0.0f,
              py::arg("w") = 1.0f, py::arg("h") = 1.0f, py::arg("d") = 1.0f,
+             py::arg("material") = Material())
+        .def("add_3d_element", &GameEngine::add_3d_element,
+             py::arg("name") = "3DElement",
+             py::arg("x") = 0.0f, py::arg("y") = 0.0f, py::arg("z") = 0.0f,
+             py::arg("rx") = 0.0f, py::arg("ry") = 0.0f, py::arg("rz") = 0.0f,
+             py::arg("vx") = 0.0f, py::arg("vy") = 0.0f, py::arg("vz") = 0.0f,
+             py::arg("vrx") = 0.0f, py::arg("vry") = 0.0f, py::arg("vrz") = 0.0f,
+             py::arg("scale") = 1.0f,
              py::arg("material") = Material())
         .def("get_entities", &GameEngine::get_entities)
         .def("clear_entities", &GameEngine::clear_entities)
