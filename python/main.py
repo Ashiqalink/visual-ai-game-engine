@@ -6,7 +6,6 @@ import cv2
 import numpy as np
 
 # Ensure project root and build directory are on path
-
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Import C++ Core Engine module (pybind11 compiled extension)
@@ -81,6 +80,8 @@ from python.pipeline import VisionPipeline
 
 def main():
     WIDTH, HEIGHT = 800, 600
+    TARGET_FPS = 30.0
+    FRAME_TARGET_TIME = 1.0 / TARGET_FPS  # ~0.0333 seconds (33.3 ms per frame)
     
     # Initialize Engine (C++ if built, fallback otherwise)
     if CPP_ENGINE_AVAILABLE:
@@ -88,14 +89,14 @@ def main():
     else:
         engine = PythonFallbackEngine(float(WIDTH), float(HEIGHT))
 
-    # Thread-safe queue for camera AI results
+    # Thread-safe queue for camera AI results (Producer-drop overflow model)
     ai_queue = queue.Queue(maxsize=2)
     
     # Start Vision Pipeline in background thread
     pipeline = VisionPipeline(result_queue=ai_queue, width=WIDTH, height=HEIGHT)
     pipeline.start()
 
-    print("[Main] Engine running at target 60+ FPS. Press 'q' or 'ESC' to quit.")
+    print(f"[Main] Engine loop running with strict target {TARGET_FPS} FPS cap. Press 'q' or 'ESC' to quit.")
 
     last_time = time.time()
     frame_count = 0
@@ -106,7 +107,8 @@ def main():
 
     try:
         while True:
-            now = time.time()
+            frame_start_time = time.time()
+            now = frame_start_time
             dt = now - last_time
             last_time = now
 
@@ -148,7 +150,7 @@ def main():
 
             # Draw HUD
             engine_type = "C++ Core" if CPP_ENGINE_AVAILABLE else "Python Fallback"
-            cv2.putText(render_canvas, f"Engine: {engine_type} | FPS: {fps:.1f}", (15, 30),
+            cv2.putText(render_canvas, f"Engine: {engine_type} | FPS: {fps:.1f} (Cap: 30)", (15, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             cv2.putText(render_canvas, f"Sprite: ({bx}, {by}) | Vision Target: ({tx}, {ty})", (15, 55),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
@@ -156,10 +158,16 @@ def main():
             # Display window
             cv2.imshow("Visual AI Game Engine v1.0", render_canvas)
 
-            # Handle exit
+            # Handle exit without blocking
             key = cv2.waitKey(1) & 0xFF
             if key in (27, ord('q')):
                 break
+
+            # 5. Frame pacing: enforce strict 30 FPS cap
+            elapsed = time.time() - frame_start_time
+            sleep_time = FRAME_TARGET_TIME - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
     finally:
         pipeline.stop()

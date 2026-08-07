@@ -45,12 +45,29 @@ mp_hands_module = None
 
 try:
     import mediapipe as mp
-    mp_face_detection_module = mp.solutions.face_detection
-    mp_hands_module = mp.solutions.hands
-    HAS_MEDIAPIPE = True
-except Exception as e:
-    HAS_MEDIAPIPE = False
-    print(f"[VisionPipeline] Warning: Could not initialize MediaPipe: {e}")
+
+    # Face detection
+    try:
+        import mediapipe.solutions.face_detection as mp_face_detection_module
+        HAS_MEDIAPIPE = True
+    except (ImportError, AttributeError):
+        try:
+            from mediapipe.python.solutions import face_detection as mp_face_detection_module
+            HAS_MEDIAPIPE = True
+        except (ImportError, AttributeError):
+            pass
+
+    # Hands
+    try:
+        import mediapipe.solutions.hands as mp_hands_module
+    except (ImportError, AttributeError):
+        try:
+            from mediapipe.python.solutions import hands as mp_hands_module
+        except (ImportError, AttributeError):
+            mp_hands_module = None
+
+except (ImportError, AttributeError):
+    pass
 
 # ── Gesture detection constants ───────────────────────────────────────────────
 # Pinch
@@ -255,12 +272,8 @@ class VisionPipeline(threading.Thread):
             # Apply Noise Filter to suppress transient clicks/pinches during warmup window
             payload = self.noise_filter.process_payload(payload)
 
-            if self.result_queue.full():
-                try:
-                    self.result_queue.get_nowait()
-                except queue.Empty:
-                    pass
-            self.result_queue.put(payload)
+            if not self.result_queue.full():
+                self.result_queue.put(payload)
 
         if cap and cap.isOpened():
             cap.release()
@@ -271,8 +284,7 @@ class VisionPipeline(threading.Thread):
     # ── Frame processing ──────────────────────────────────────────────────────
     def _process_frame(self, bgr_frame: np.ndarray) -> dict:
         """Run face + hand detection on one BGR frame. Returns full payload."""
-        cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB, dst=self._rgb_buf)
-        rgb = self._rgb_buf
+        rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
 
         # ── Face detection ────────────────────────────────────────────────────
         target_x = self.width  / 2.0
@@ -427,7 +439,7 @@ class VisionPipeline(threading.Thread):
         d_im = math.sqrt((raw_ix - raw_mx)**2 + (raw_iy - raw_my)**2)
 
         # User must keep fingers distinct (separated) to build lock progress slowly
-        distinct = (d_ti > 45.0) and (d_tm > 45.0) and (d_im > 45.0)
+        distinct = (d_ti > 30.0) and (d_tm > 30.0) and (d_im > 30.0)
 
         # Distance from each fingertip to centroid
         dist_t_c = math.sqrt((raw_tx - c_x)**2 + (raw_ty - c_y)**2)

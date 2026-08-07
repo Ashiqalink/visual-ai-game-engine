@@ -33,3 +33,18 @@ Thumbs.db
 # Local skills/docs
 SKILLS.md
 .agents/
+
+# OpenCV temporary/large files
+*.onnx
+*.pb
+*.tflite
+*.xml
+*.yml
+*.yaml
+*.mp4
+*.avi
+*.h264
+*.mkv
+captures/
+logs/
+

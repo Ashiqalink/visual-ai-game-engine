@@ -45,7 +45,7 @@ class TestGameEngine(unittest.TestCase):
         self.assertEqual(ent_fb.x, 150.0)
 
         # Test C++ engine or active backend
-        self.engine.add_entity("Obstacle", x=50.0, y=50.0, w=10.0, h=10.0, material=gold_mat)
+        self.engine.add_entity("Obstacle", x=50.0, y=50.0, z=0.0, vx=0.0, vy=0.0, vz=0.0, w=10.0, h=10.0, d=1.0)
         entities = self.engine.get_entities()
         self.assertEqual(len(entities), 1)
 

@@ -1,12 +1,14 @@
 """
-noise_filter.py — Timing & Noise Filter wrapper for Visual AI Game Engine.
+noise_filter.py — Timing & Signal Stream Noise Filter wrapper for Visual AI Game Engine.
 
 Suppresses transient false-positive gesture events, clicks, pinches, and OCR results
 during camera warm-up, initial state loading, or scene transitions.
+Provides generic input stream smoothing (EMA & One-Euro filter).
 """
 
 import time
-from typing import Any, Dict, Optional
+import math
+from typing import Any, Dict, Optional, Tuple, Union
 
 
 class NoiseFilter:
@@ -47,6 +49,42 @@ class NoiseFilter:
         if self.start_time is None:
             self.start()
         return self.elapsed() < self.noise_duration
+
+
+class GenericStreamFilter:
+    """
+    Exponential Moving Average (EMA) smoother for scalar numbers or 2D/3D tuples.
+    Can be attached to any input stream (mouse, joystick, hand landmarks).
+    """
+
+    def __init__(self, alpha: float = 0.25):
+        self.alpha = max(0.0, min(1.0, float(alpha)))
+        self.prev_val: Optional[Union[float, Tuple[float, ...]]] = None
+
+    def filter(self, val: Union[float, Tuple[float, ...]]) -> Union[float, Tuple[float, ...]]:
+        if self.prev_val is None:
+            self.prev_val = val
+            return val
+
+        if isinstance(val, (int, float)):
+            res = self.alpha * float(val) + (1.0 - self.alpha) * float(self.prev_val)
+            self.prev_val = res
+            return res
+
+        if isinstance(val, (tuple, list)):
+            prev_tuple = tuple(self.prev_val)
+            res_list = [
+                self.alpha * float(v) + (1.0 - self.alpha) * float(p)
+                for v, p in zip(val, prev_tuple)
+            ]
+            res_tuple = tuple(res_list)
+            self.prev_val = res_tuple
+            return res_tuple
+
+        return val
+
+    def reset(self):
+        self.prev_val = None
 
 
 class FilteredGestureDetector:

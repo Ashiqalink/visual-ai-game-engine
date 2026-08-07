@@ -378,14 +378,23 @@ class Mesh3D:
         return Mesh3D(vertices=new_verts, faces=self.faces, normals=self.normals)
 
 
-
 class Renderer3D:
     """
     Software 3D Mesh Renderer for drawing depth-sorted shaded 3D primitives onto OpenCV image frames.
     """
-    def __init__(self, camera: Optional[Camera3D] = None):
+    def __init__(self, camera: Optional[Camera3D] = None, light_angle_deg: float = 45.0, ambient_intensity: float = 0.45, light_intensity: float = 0.85):
         self.camera = camera if camera is not None else Camera3D()
-        self.light_dir = np.array([0.5, 0.7, 1.0], dtype=np.float64)
+        self.ambient_intensity = ambient_intensity
+        self.light_intensity = light_intensity
+        self.set_light_angle(light_angle_deg)
+
+    def set_light_angle(self, angle_deg: float):
+        """Set directional light vector based on angle in degrees."""
+        rad = math.radians(angle_deg)
+        lx = math.cos(rad)
+        ly = math.sin(rad)
+        lz = 0.85
+        self.light_dir = np.array([lx, ly, lz], dtype=np.float64)
         self.light_dir /= np.linalg.norm(self.light_dir)
 
     def render_mesh(
@@ -455,9 +464,9 @@ class Renderer3D:
                     else:
                         normal = np.array([0.0, 0.0, 1.0])
 
-                    # Directional diffuse lighting with ambient floor for vibrant material visibility
+                    # Directional diffuse lighting with configurable ambient floor
                     dot_val = abs(float(np.dot(normal, self.light_dir)))
-                    intensity = max(0.55, min(1.0, 0.45 + 0.55 * dot_val))
+                    intensity = max(self.ambient_intensity, min(1.0, self.ambient_intensity + (1.0 - self.ambient_intensity) * dot_val * self.light_intensity))
                 else:
                     intensity = 1.0
 
@@ -480,6 +489,5 @@ class Renderer3D:
                         cv2.addWeighted(overlay, material.opacity, roi, 1.0 - material.opacity, 0, roi)
                 else:
                     cv2.fillPoly(frame, [pts], shaded_bgr, lineType=cv2.LINE_AA)
-                    cv2.polylines(frame, [pts], isClosed=True, color=(20, 20, 20), thickness=1, lineType=cv2.LINE_AA)
 
         return frame
