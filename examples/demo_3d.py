@@ -10,7 +10,7 @@ import numpy as np
 
 from visual_ai import (
     VisionPipeline,
-    GameEngine,
+    PythonFallbackEngine,
     CPP_ENGINE_AVAILABLE,
     Transform3D,
     Camera3D,
@@ -24,11 +24,21 @@ from visual_ai import (
 def main():
     WIDTH, HEIGHT = 800, 600
 
-    print(f"[3D Demo] C++ Core Acceleration: {'Enabled' if CPP_ENGINE_AVAILABLE else 'Disabled (Fallback)'}")
+    print(f"[3D Demo] C++ Core built: {'yes' if CPP_ENGINE_AVAILABLE else 'no'} "
+          "(this demo runs on the Python engine either way)")
     print("[3D Demo] Initializing 3D Scene and AI Vision Pipeline...")
 
-    # Initialize Physics / Scene Engine
-    engine = GameEngine(float(WIDTH), float(HEIGHT))
+    # This demo deliberately pins the Python engine rather than taking whichever
+    # `GameEngine` is available. The two have diverged and the C++ core cannot
+    # run this scene:
+    #   * add_3d_element() there takes no `mesh` argument -- meshes are a Python
+    #     concept living in visual_ai/render3d.py, and engine.hpp has no
+    #     renderer at all.
+    #   * it returns an int entity id, whereas this demo mutates the returned
+    #     object directly (target_ent.x = ...), which needs an Entity.
+    # Selecting GameEngine automatically is what made this demo crash whenever
+    # the compiled core was present.
+    engine = PythonFallbackEngine(float(WIDTH), float(HEIGHT))
 
     # Initialize 3D Camera & Software Renderer
     camera = Camera3D(fov=60.0, screen_width=WIDTH, screen_height=HEIGHT, position=(0.0, 0.0, 500.0))
