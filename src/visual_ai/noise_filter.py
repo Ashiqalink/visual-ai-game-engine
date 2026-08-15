@@ -6,9 +6,11 @@ during camera warm-up, initial state loading, or scene transitions.
 Provides generic input stream smoothing (EMA & One-Euro filter).
 """
 
-import time
 import math
+import time
 from typing import Any, Dict, Optional, Tuple, Union
+
+Numeric = Union[float, Tuple[float, ...]]
 
 
 class NoiseFilter:
@@ -59,32 +61,172 @@ class GenericStreamFilter:
 
     def __init__(self, alpha: float = 0.25):
         self.alpha = max(0.0, min(1.0, float(alpha)))
-        self.prev_val: Optional[Union[float, Tuple[float, ...]]] = None
+        self.prev_val: Optional[Numeric] = None
 
-    def filter(self, val: Union[float, Tuple[float, ...]]) -> Union[float, Tuple[float, ...]]:
-        if self.prev_val is None:
-            self.prev_val = val
+    def filter(self, val: Numeric) -> Numeric:
+        if val is None:
             return val
 
-        if isinstance(val, (int, float)):
+        is_seq = isinstance(val, (tuple, list))
+        prev_is_seq = isinstance(self.prev_val, (tuple, list))
+
+        # A stream that switches shape (scalar -> tuple, or 2D -> 3D) used to
+        # raise TypeError or silently drop components via a short zip(). Restart
+        # the filter instead: history from a different shape is meaningless.
+        if self.prev_val is None or is_seq != prev_is_seq or (
+            is_seq and len(val) != len(self.prev_val)
+        ):
+            self.prev_val = tuple(float(v) for v in val) if is_seq else val
+            return val
+
+        if is_seq:
+            res_tuple = tuple(
+                self.alpha * float(v) + (1.0 - self.alpha) * float(p)
+                for v, p in zip(val, self.prev_val)
+            )
+            self.prev_val = res_tuple
+            return res_tuple
+
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
             res = self.alpha * float(val) + (1.0 - self.alpha) * float(self.prev_val)
             self.prev_val = res
             return res
-
-        if isinstance(val, (tuple, list)):
-            prev_tuple = tuple(self.prev_val)
-            res_list = [
-                self.alpha * float(v) + (1.0 - self.alpha) * float(p)
-                for v, p in zip(val, prev_tuple)
-            ]
-            res_tuple = tuple(res_list)
-            self.prev_val = res_tuple
-            return res_tuple
 
         return val
 
     def reset(self):
         self.prev_val = None
+
+
+class OneEuroFilter:
+    """
+    One-Euro filter (Casiez, Roussel & Vogel, 2012) for scalar or vector input.
+
+    A plain EMA forces one trade-off for the whole stream: enough smoothing to
+    kill resting jitter also adds visible lag to fast motion. One-Euro adapts
+    the cutoff to the signal's own speed — heavy smoothing when the hand is
+    nearly still, near-passthrough when it moves fast — so jitter and lag are
+    reduced at the same time.
+
+    For vector input the cutoff is derived from the *magnitude* of the velocity
+    across all components, so a diagonal sweep is filtered identically to a
+    horizontal one (per-axis cutoffs would warp the path).
+
+    Parameters
+    ----------
+    freq : float
+        Nominal sample rate (Hz), used until real timestamps arrive.
+    min_cutoff : float
+        Cutoff frequency (Hz) at zero speed. Lower = steadier at rest, laggier.
+    beta : float
+        Speed coupling. Higher = more responsive to fast motion. Units are
+        Hz per (input-unit / second), so pixel streams want small values
+        (~0.005) and normalized 0–1 streams want large ones (~5).
+    d_cutoff : float
+        Cutoff (Hz) for the internal velocity estimate.
+    """
+
+    def __init__(
+        self,
+        freq: float = 30.0,
+        min_cutoff: float = 1.0,
+        beta: float = 0.007,
+        d_cutoff: float = 1.0,
+    ):
+        self.freq = max(1e-3, float(freq))
+        self.min_cutoff = max(1e-3, float(min_cutoff))
+        self.beta = max(0.0, float(beta))
+        self.d_cutoff = max(1e-3, float(d_cutoff))
+
+        self._x_prev: Optional[Tuple[float, ...]] = None
+        self._dx_prev: Optional[Tuple[float, ...]] = None
+        self._t_prev: Optional[float] = None
+        self._scalar: bool = False
+
+    @staticmethod
+    def _alpha(cutoff: float, dt: float) -> float:
+        tau = 1.0 / (2.0 * math.pi * cutoff)
+        return 1.0 / (1.0 + tau / dt)
+
+    def reset(self) -> None:
+        """Forget all history; the next sample re-seeds the filter."""
+        self._x_prev = None
+        self._dx_prev = None
+        self._t_prev = None
+
+    @property
+    def initialized(self) -> bool:
+        return self._x_prev is not None
+
+    @property
+    def value(self) -> Optional[Numeric]:
+        """Most recent filtered output, or None before the first sample."""
+        if self._x_prev is None:
+            return None
+        return self._x_prev[0] if self._scalar else self._x_prev
+
+    def filter(self, val: Numeric, timestamp: Optional[float] = None) -> Numeric:
+        """
+        Filter one sample.
+
+        Parameters
+        ----------
+        val : float or sequence of float
+        timestamp : float, optional
+            Monotonic time in seconds. When omitted the nominal ``freq`` is used
+            as the timestep, which is fine for fixed-rate capture loops.
+        """
+        scalar = not isinstance(val, (tuple, list))
+        vec: Tuple[float, ...] = (float(val),) if scalar else tuple(float(v) for v in val)
+
+        # Shape change invalidates the history (same reasoning as GenericStreamFilter).
+        if self._x_prev is not None and (scalar != self._scalar or len(vec) != len(self._x_prev)):
+            self.reset()
+
+        self._scalar = scalar
+
+        if self._x_prev is None:
+            self._x_prev = vec
+            self._dx_prev = tuple(0.0 for _ in vec)
+            self._t_prev = timestamp
+            return val
+
+        if timestamp is not None and self._t_prev is not None:
+            dt = timestamp - self._t_prev
+            # Duplicate/rewound timestamps would divide by ~0 and blow the alpha up.
+            if not math.isfinite(dt) or dt <= 1e-6:
+                dt = 1.0 / self.freq
+            else:
+                self.freq = 1.0 / dt
+        else:
+            dt = 1.0 / self.freq
+        self._t_prev = timestamp
+
+        # Low-pass the derivative, then set the cutoff from its magnitude.
+        a_d = self._alpha(self.d_cutoff, dt)
+        dx = tuple((v - p) / dt for v, p in zip(vec, self._x_prev))
+        dx_hat = tuple(a_d * d + (1.0 - a_d) * dp for d, dp in zip(dx, self._dx_prev))
+        speed = math.sqrt(sum(d * d for d in dx_hat))
+
+        cutoff = self.min_cutoff + self.beta * speed
+        a = self._alpha(cutoff, dt)
+
+        x_hat = tuple(a * v + (1.0 - a) * p for v, p in zip(vec, self._x_prev))
+
+        self._x_prev = x_hat
+        self._dx_prev = dx_hat
+
+        return x_hat[0] if scalar else x_hat
+
+
+def ema_alpha_to_cutoff(alpha: float, freq: float = 30.0) -> float:
+    """
+    Convert a first-order EMA smoothing factor to the equivalent One-Euro
+    ``min_cutoff`` in Hz, so existing ``smooth_alpha`` tuning carries over as
+    the *resting* smoothness of a One-Euro filter.
+    """
+    a = max(1e-4, min(0.999, float(alpha)))
+    return (a * float(freq)) / (2.0 * math.pi * (1.0 - a))
 
 
 class FilteredGestureDetector:
@@ -96,7 +238,9 @@ class FilteredGestureDetector:
     def __init__(self, detector_or_bus: Any = None, noise_duration: float = 2.0):
         self.noise_filter = NoiseFilter(noise_duration=noise_duration)
         self.detector = detector_or_bus
-        self.bus = getattr(detector_or_bus, "bus", getattr(detector_or_bus, "event_bus", None))
+        self.bus = getattr(detector_or_bus, "bus", None) or getattr(
+            detector_or_bus, "event_bus", None
+        )
 
     def is_noise_window_active(self) -> bool:
         """Check if currently within the noise suppression window."""
@@ -133,13 +277,40 @@ class PipelineNoiseFilter:
     Suppresses transient gesture flags while passing coordinates and camera frames through.
     """
 
+    #: Boolean trigger flags zeroed while the noise window is open.
+    #: ``is_3_finger_pinching`` is the key VisionPipeline actually emits — the
+    #: previous list named only ``is_3_pinching``/``pinch_active``, which exist
+    #: in no payload, so the 3-finger pinch was never suppressed and two bogus
+    #: keys were injected into every frame instead.
+    #:
+    #: Only transient triggers belong here. The filter can only rewrite its
+    #: payload copy, not the pipeline's internal counters, so masking any
+    #: persistent state would make the HUD snap the instant the window closed.
+    SUPPRESSED_FLAGS = (
+        "is_pinching",
+        "click_just_fired",
+        "is_3_finger_pinching",
+        # Legacy aliases — suppressed when a caller supplies them.
+        "is_3_pinching",
+        "pinch_active",
+    )
+
+    #: Numeric fields zeroed while the noise window is open.
+    SUPPRESSED_SCALARS = (
+        "z_delta",
+        "xy_drift",
+    )
+
     def __init__(self, noise_duration: float = 2.0):
         self.filter = NoiseFilter(noise_duration=noise_duration)
 
     def process_payload(self, payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """
-        Processes and mutates pipeline payload dict.
+        Processes pipeline payload dict, returning a shallow copy.
         Zeroes out gesture trigger flags when inside noise window.
+
+        Only keys already present are modified — the filter never invents keys,
+        so a payload shape stays exactly as the pipeline defined it.
         """
         if payload is None:
             return None
@@ -148,11 +319,12 @@ class PipelineNoiseFilter:
         filtered_payload = payload.copy()
 
         if self.filter.is_active():
-            filtered_payload["is_pinching"] = False
-            filtered_payload["click_just_fired"] = False
-            filtered_payload["is_3_pinching"] = False
-            filtered_payload["pinch_active"] = False
-            filtered_payload["z_delta"] = 0.0
+            for key in self.SUPPRESSED_FLAGS:
+                if key in filtered_payload:
+                    filtered_payload[key] = False
+            for key in self.SUPPRESSED_SCALARS:
+                if key in filtered_payload:
+                    filtered_payload[key] = 0.0
 
         return filtered_payload
 
