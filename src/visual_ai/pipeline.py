@@ -147,9 +147,10 @@ def classify_hand_sign(fingers_extended) -> str:
     fingers_extended : tuple[bool, bool, bool, bool, bool]
         (thumb, index, middle, ring, pinky)
 
-    The thumb is deliberately ignored for `fist`: a closed hand often leaves the
-    thumb lying alongside the fingers where the wrist-distance test still reads
-    it as extended, so requiring a tucked thumb would make fists unreliable.
+    The thumb is deliberately ignored for `fist`: plenty of people close a fist
+    with the thumb resting alongside the fingers rather than across them, which
+    is a genuinely abducted thumb, so requiring a tucked thumb would make fists
+    unreliable. It is still required for `open_palm`, where it is unambiguous.
     """
     thumb, index, middle, ring, pinky = fingers_extended
     four = (index, middle, ring, pinky)
@@ -770,7 +771,15 @@ class VisionPipeline(threading.Thread):
         def extended(tip: int, pip: int) -> bool:
             return dist3d(tip, 0) > dist3d(pip, 0)
 
-        thumb_ext  = extended(4,  2)
+        # The wrist anchor is degenerate for the thumb: landmark 2 (thumb MCP)
+        # sits almost on the wrist, so the tip clears it even with the thumb
+        # folded flat across the palm — the T pip read as extended nearly all
+        # the time. Measure abduction instead: a tucked thumb travels toward the
+        # pinky MCP (17) while an extended one swings away from it, so compare
+        # the tip against its own IP joint with a palm-scaled margin so a
+        # resting thumb cannot flicker.
+        palm_span  = max(dist3d(0, 17), 1e-6)
+        thumb_ext  = (dist3d(4, 17) - dist3d(3, 17)) > 0.10 * palm_span
         index_ext  = extended(8,  6)
         middle_ext = extended(12, 10)
         ring_ext   = extended(16, 14)
