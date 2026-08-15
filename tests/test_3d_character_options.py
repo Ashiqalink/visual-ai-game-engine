@@ -6,8 +6,14 @@ import sys
 import os
 import numpy as np
 
-# Ensure visual ai game engine is in sys.path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+# Ensure the visual_ai package is importable.
+# This must point at src/, not the project root: a stale copy of the package
+# also sits at <root>/visual_ai, and putting the root first on sys.path makes
+# that copy shadow src/visual_ai for every module imported afterwards — which
+# silently ran the whole test suite against outdated code.
+src_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src'))
+if src_root not in sys.path:
+    sys.path.insert(0, src_root)
 
 from visual_ai import Renderer3D, Mesh3D, Transform3D, Camera3D, Material
 
