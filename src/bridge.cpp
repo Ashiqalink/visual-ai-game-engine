@@ -1,41 +1,171 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "engine.hpp"
 
 namespace py = pybind11;
 using namespace vision_engine;
 
+namespace {
+
+// The SDK exposes exactly one Material type: visual_ai.material.Material.
+//
+// This module used to publish a second, unrelated `engine_core.Material`, so a
+// game that built a `visual_ai.Material` (which is what every example and every
+// game here does) could not pass it to the compiled engine at all, and
+// `isinstance(entity.material, visual_ai.Material)` was False on machines where
+// the C++ core happened to be built. The type caster below translates the
+// Python dataclass to and from the C++ struct instead, so callers only ever see
+// the one type.
+//
+// The lookup is deliberately lazy — resolving it at module-import time would
+// pull `visual_ai` in while `visual_ai/__init__.py` is still importing us — and
+// the handle is intentionally leaked, so no Python object is released after
+// interpreter shutdown.
+py::handle material_type() {
+    static py::handle cls = []() {
+        py::object material = py::module_::import("visual_ai.material").attr("Material");
+        return material.release();
+    }();
+    return cls;
+}
+
+py::object new_material() {
+    return py::reinterpret_borrow<py::object>(material_type())();
+}
+
+// visual_ai.ShaderType is a str-valued Enum whose values match these names, and
+// Material.__post_init__ turns a plain string back into the enum member, so the
+// value string is the common currency between the two representations.
+const char* shader_to_str(ShaderType type) {
+    switch (type) {
+        case ShaderType::Unlit:       return "Unlit";
+        case ShaderType::Transparent: return "Transparent";
+        case ShaderType::Phong:       return "Phong";
+        case ShaderType::Custom:      return "Custom";
+        case ShaderType::PBR_Standard:
+        default:                      return "PBR_Standard";
+    }
+}
+
+ShaderType shader_from_py(py::handle type) {
+    std::string value = py::hasattr(type, "value")
+                            ? py::str(type.attr("value")).cast<std::string>()
+                            : py::str(type).cast<std::string>();
+    if (value == "Unlit") return ShaderType::Unlit;
+    if (value == "Transparent") return ShaderType::Transparent;
+    if (value == "Phong") return ShaderType::Phong;
+    if (value == "Custom") return ShaderType::Custom;
+    return ShaderType::PBR_Standard;
+}
+
+void load_floats(py::handle src, float* dst, size_t count) {
+    auto values = src.cast<std::vector<float>>();
+    for (size_t i = 0; i < count && i < values.size(); ++i) {
+        dst[i] = values[i];
+    }
+}
+
+}  // namespace
+
+namespace pybind11 {
+namespace detail {
+
+template <>
+struct type_caster<vision_engine::Material> {
+public:
+    PYBIND11_TYPE_CASTER(vision_engine::Material, const_name("visual_ai.material.Material"));
+
+    bool load(handle src, bool) {
+        if (!src || src.is_none()) return false;
+        try {
+            if (!isinstance(src, material_type())) return false;
+            value.name = src.attr("name").cast<std::string>();
+            value.shader_type = shader_from_py(src.attr("shader_type"));
+            load_floats(src.attr("base_color"), value.base_color, 4);
+            value.normal_map = src.attr("normal_map").cast<std::string>();
+            value.roughness = src.attr("roughness").cast<float>();
+            value.metallic = src.attr("metallic").cast<float>();
+            load_floats(src.attr("emission"), value.emission, 3);
+            value.opacity = src.attr("opacity").cast<float>();
+        } catch (const error_already_set&) {
+            return false;
+        }
+        return true;
+    }
+
+    static handle cast(const vision_engine::Material& src, return_value_policy, handle) {
+        object cls = reinterpret_borrow<object>(material_type());
+        object out = cls(
+            py::arg("name") = src.name,
+            py::arg("shader_type") = shader_to_str(src.shader_type),
+            py::arg("base_color") = py::make_tuple(src.base_color[0], src.base_color[1],
+                                                   src.base_color[2], src.base_color[3]),
+            py::arg("normal_map") = src.normal_map,
+            py::arg("roughness") = src.roughness,
+            py::arg("metallic") = src.metallic,
+            py::arg("emission") = py::make_tuple(src.emission[0], src.emission[1], src.emission[2]),
+            py::arg("opacity") = src.opacity);
+        return out.release();
+    }
+};
+
+}  // namespace detail
+}  // namespace pybind11
+
+namespace {
+
+// Resolve the `material=` keyword: absent means a default Material, and
+// anything that is not a visual_ai.Material is a TypeError rather than the
+// caster's generic "incompatible function arguments".
+Material coerce_material(py::object& material) {
+    if (material.is_none()) material = new_material();
+    if (!py::isinstance(material, material_type())) {
+        throw py::type_error("material must be a visual_ai.Material, got " +
+                             py::str(py::type::of(material).attr("__name__")).cast<std::string>());
+    }
+    return material.cast<Material>();
+}
+
+// Bindings-only subclass: it pins one Python wrapper per entity.
+//
+// `mesh` and the material object live on the wrapper rather than in the C++
+// struct (a mesh is a pure Python concept from visual_ai/render3d.py, and
+// engine.hpp has no renderer). Keeping the wrapper alive for as long as the
+// engine holds the entity is what makes those attributes survive a round trip
+// through `get_entities()` — pybind11 hands back the *same* wrapper for a
+// pointer it already knows, but only while that wrapper is still alive.
+//
+// The wrappers own the entities through their shared_ptr holder and hold no
+// reference back to the engine, so this pins memory without creating a cycle.
+class PyGameEngine : public GameEngine {
+public:
+    using GameEngine::GameEngine;
+
+    py::object track(const EntityPtr& entity, py::object material, py::object mesh) {
+        py::object wrapper = py::cast(entity);
+        wrapper.attr("_material_py") = std::move(material);
+        wrapper.attr("mesh") = std::move(mesh);
+        m_wrappers.push_back(wrapper);
+        return wrapper;
+    }
+
+    void forget_all() { m_wrappers.clear(); }
+
+private:
+    std::vector<py::object> m_wrappers;
+};
+
+}  // namespace
+
 PYBIND11_MODULE(engine_core, m) {
     m.doc() = "High-performance C++ Game Engine core with pybind11 bindings";
 
-    py::enum_<ShaderType>(m, "ShaderType")
-        .value("PBR_Standard", ShaderType::PBR_Standard)
-        .value("Unlit", ShaderType::Unlit)
-        .value("Transparent", ShaderType::Transparent)
-        .value("Phong", ShaderType::Phong)
-        .value("Custom", ShaderType::Custom)
-        .export_values();
-
-    py::class_<Material>(m, "Material")
-        .def(py::init<>())
-        .def_readwrite("name", &Material::name)
-        .def_readwrite("shader_type", &Material::shader_type)
-        .def_readwrite("normal_map", &Material::normal_map)
-        .def_readwrite("roughness", &Material::roughness)
-        .def_readwrite("metallic", &Material::metallic)
-        .def_readwrite("opacity", &Material::opacity)
-        .def_property("base_color",
-            [](const Material& mat) { return std::vector<float>(mat.base_color, mat.base_color + 4); },
-            [](Material& mat, const std::vector<float>& color) {
-                for (size_t i = 0; i < 4 && i < color.size(); ++i) mat.base_color[i] = color[i];
-            })
-        .def_property("emission",
-            [](const Material& mat) { return std::vector<float>(mat.emission, mat.emission + 3); },
-            [](Material& mat, const std::vector<float>& color) {
-                for (size_t i = 0; i < 3 && i < color.size(); ++i) mat.emission[i] = color[i];
-            });
-
-    py::class_<Entity>(m, "Entity")
+    py::class_<Entity, std::shared_ptr<Entity>>(m, "Entity", py::dynamic_attr())
         .def_readonly("id", &Entity::id)
         .def_readwrite("name", &Entity::name)
         .def_readwrite("x", &Entity::x)
@@ -54,7 +184,22 @@ PYBIND11_MODULE(engine_core, m) {
         .def_readwrite("height", &Entity::height)
         .def_readwrite("depth", &Entity::depth)
         .def_readwrite("active", &Entity::active)
-        .def_readwrite("material", &Entity::material);
+        // Reads return the very object that was handed to add_entity(), the way
+        // the Python fallback's dataclass field does, instead of a fresh copy
+        // per access — so `ent.material is gold_mat` and in-place edits behave
+        // the same on both engines.
+        .def_property(
+            "material",
+            [](py::object self) -> py::object {
+                if (py::hasattr(self, "_material_py")) return self.attr("_material_py");
+                py::object material = py::cast(self.cast<Entity&>().material);
+                self.attr("_material_py") = material;
+                return material;
+            },
+            [](py::object self, py::object material) {
+                self.cast<Entity&>().material = material.cast<Material>();
+                self.attr("_material_py") = std::move(material);
+            });
 
     py::class_<Block>(m, "Block")
         .def_readonly("x", &Block::x)
@@ -77,38 +222,68 @@ PYBIND11_MODULE(engine_core, m) {
         .def_readonly("active", &Debris::active)
         .def_readonly("material", &Debris::material);
 
-    py::class_<GameEngine>(m, "GameEngine")
+    py::class_<PyGameEngine>(m, "GameEngine")
         .def(py::init<float, float>(),
              py::arg("width") = 800.0f,
              py::arg("height") = 600.0f)
-        .def("update", &GameEngine::update, py::arg("dt"), "Update physics loop for elapsed time dt")
-        .def("set_target_position", &GameEngine::set_target_position, py::arg("x"), py::arg("y"), "Set vision target coordinates")
-        .def("add_entity", &GameEngine::add_entity,
+        .def("update", &PyGameEngine::update, py::arg("dt"), "Update physics loop for elapsed time dt")
+        .def("set_target_position", &PyGameEngine::set_target_position, py::arg("x"), py::arg("y"), "Set vision target coordinates")
+        // add_entity / add_3d_element return the Entity itself, not its id: the
+        // fallback engine does, and callers mutate what comes back
+        // (`ent.x = ...`). Read `.id` for the identifier.
+        .def("add_entity",
+             [](PyGameEngine& self, std::string name, float x, float y, float z,
+                float vx, float vy, float vz, float w, float h, float d,
+                py::object material) {
+                 auto entity = self.GameEngine::add_entity(std::move(name), x, y, z, vx, vy, vz, w, h, d,
+                                                           coerce_material(material));
+                 return self.track(entity, std::move(material), py::none());
+             },
              py::arg("name") = "Entity",
              py::arg("x") = 0.0f, py::arg("y") = 0.0f, py::arg("z") = 0.0f,
              py::arg("vx") = 0.0f, py::arg("vy") = 0.0f, py::arg("vz") = 0.0f,
              py::arg("w") = 1.0f, py::arg("h") = 1.0f, py::arg("d") = 1.0f,
-             py::arg("material") = Material())
-        .def("add_3d_element", &GameEngine::add_3d_element,
+             py::arg("material") = py::none())
+        .def("add_3d_element",
+             [](PyGameEngine& self, std::string name, float x, float y, float z,
+                float rx, float ry, float rz, float vx, float vy, float vz,
+                float vrx, float vry, float vrz, float scale,
+                py::object material, py::object mesh) {
+                 auto entity = self.GameEngine::add_3d_element(std::move(name), x, y, z, rx, ry, rz,
+                                                               vx, vy, vz, vrx, vry, vrz, scale,
+                                                               coerce_material(material));
+                 return self.track(entity, std::move(material), std::move(mesh));
+             },
              py::arg("name") = "3DElement",
              py::arg("x") = 0.0f, py::arg("y") = 0.0f, py::arg("z") = 0.0f,
              py::arg("rx") = 0.0f, py::arg("ry") = 0.0f, py::arg("rz") = 0.0f,
              py::arg("vx") = 0.0f, py::arg("vy") = 0.0f, py::arg("vz") = 0.0f,
              py::arg("vrx") = 0.0f, py::arg("vry") = 0.0f, py::arg("vrz") = 0.0f,
              py::arg("scale") = 1.0f,
-             py::arg("material") = Material())
-        .def("get_entities", &GameEngine::get_entities)
-        .def("clear_entities", &GameEngine::clear_entities)
-        .def("add_block", &GameEngine::add_block,
+             py::arg("material") = py::none(),
+             py::arg("mesh") = py::none())
+        // Live entities, not copies: writing to what this returns used to be
+        // silently discarded by the C++ engine and honoured by the fallback.
+        .def("get_entities", &PyGameEngine::get_entities)
+        .def("clear_entities",
+             [](PyGameEngine& self) {
+                 self.GameEngine::clear_entities();
+                 self.forget_all();
+             })
+        .def("add_block",
+             [](PyGameEngine& self, float x, float y, float w, float h, float health,
+                py::object material) {
+                 self.GameEngine::add_block(x, y, w, h, health, coerce_material(material));
+             },
              py::arg("x"), py::arg("y"), py::arg("w"), py::arg("h"), py::arg("health"),
-             py::arg("material") = Material())
-        .def("get_blocks", &GameEngine::get_blocks)
-        .def("get_debris", &GameEngine::get_debris)
-        .def("clear_blocks", &GameEngine::clear_blocks)
-        .def("get_x", &GameEngine::get_x)
-        .def("get_y", &GameEngine::get_y)
-        .def("get_target_x", &GameEngine::get_target_x)
-        .def("get_target_y", &GameEngine::get_target_y)
-        .def("get_width", &GameEngine::get_width)
-        .def("get_height", &GameEngine::get_height);
+             py::arg("material") = py::none())
+        .def("get_blocks", &PyGameEngine::get_blocks)
+        .def("get_debris", &PyGameEngine::get_debris)
+        .def("clear_blocks", &PyGameEngine::clear_blocks)
+        .def("get_x", &PyGameEngine::get_x)
+        .def("get_y", &PyGameEngine::get_y)
+        .def("get_target_x", &PyGameEngine::get_target_x)
+        .def("get_target_y", &PyGameEngine::get_target_y)
+        .def("get_width", &PyGameEngine::get_width)
+        .def("get_height", &PyGameEngine::get_height);
 }
