@@ -579,6 +579,7 @@ class VisionPipeline(threading.Thread):
             print(f"{msg} Running simulated vision target.")
 
         sim_angle = 0.0
+        sim_template: np.ndarray | None = None
 
         try:
             while self.running:
@@ -601,21 +602,26 @@ class VisionPipeline(threading.Thread):
                     if self.camera_available and cap is not None:
                         cap.grab() # Keep buffer drained while disabled
                     # ── Simulated mode (no camera) ────────────────────────────────
-                    sim_angle += 0.05
+                    # 5 rad/s regardless of loop rate — the old fixed 0.05/tick
+                    # tied the orbit speed to how fast the loop happened to spin.
+                    sim_angle += 5.0 / self.capture_fps
                     target_x = self.width  / 2.0 + math.cos(sim_angle) * 200.0
                     target_y = self.height / 2.0 + math.sin(sim_angle) * 150.0
 
-                    dummy = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-                    cv2.putText(
-                        dummy,
-                        "Simulated Vision Mode (No Camera)",
-                        (20, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        (0, 255, 255),
-                        2,
-                    )
-                    payload = self._empty_payload(target_x, target_y, dummy)
+                    # The banner never changes; paint it once and hand each frame
+                    # out as a copy (consumers draw HUDs onto payload["frame"]).
+                    if sim_template is None:
+                        sim_template = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                        cv2.putText(
+                            sim_template,
+                            "Simulated Vision Mode (No Camera)",
+                            (20, 40),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            (0, 255, 255),
+                            2,
+                        )
+                    payload = self._empty_payload(target_x, target_y, sim_template.copy())
 
                 # Advance the stabilization clock from the capture loop, not from
                 # gesture extraction. Samples only arrive while a hand is in view,
@@ -644,7 +650,12 @@ class VisionPipeline(threading.Thread):
                     except queue.Empty:
                         pass
                 self.result_queue.put_nowait(payload)
-                time.sleep(0.01)
+                # Real-camera pacing comes from the blocking cap.read() itself;
+                # the old unconditional 10 ms sleep here added a fixed frame of
+                # latency at 60 fps for nothing. Only the camera-less path needs
+                # a governor, and it now runs at capture_fps instead of ~100 Hz.
+                if not self.camera_available or getattr(self, 'disable_camera', False):
+                    time.sleep(1.0 / self.capture_fps)
         finally:
             if cap is not None:
                 try:
