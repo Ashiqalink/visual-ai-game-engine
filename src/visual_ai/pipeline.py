@@ -326,6 +326,10 @@ class VisionPipeline(threading.Thread):
         How many hands MediaPipe tracks, and how many gesture slots the payload
         carries. 1 is measurably cheaper per frame; 2 is the default because it
         is what the detector was already configured with.
+    model_complexity : int
+        MediaPipe Hands model tier: 1 (default) is the full landmark model,
+        0 is the lite model — noticeably cheaper per frame at a small cost in
+        fingertip accuracy. The speed knob to reach for on low-end machines.
     """
 
     def __init__(
@@ -341,6 +345,7 @@ class VisionPipeline(threading.Thread):
         capture_fps: float = 30.0,
         enable_z_click: bool = False,
         max_hands: int = 2,
+        model_complexity: int = 1,
     ):
         super().__init__(daemon=True)
         self.result_queue  = result_queue
@@ -401,12 +406,16 @@ class VisionPipeline(threading.Thread):
         # ── MediaPipe: Hands ──────────────────────────────────────────────────
         self._mp_hands = None
         self.max_hands = max(1, int(max_hands))
+        # 1 is MediaPipe's full landmark model; 0 trades a little fingertip
+        # accuracy for a substantially cheaper per-frame inference — worth
+        # exposing so a low-end machine can hold its frame rate.
+        self.model_complexity = 0 if int(model_complexity) <= 0 else 1
         if mp_hands_module is not None:
             try:
                 self._mp_hands = mp_hands_module.Hands(
                     static_image_mode=False,
                     max_num_hands=self.max_hands,
-                    model_complexity=1,
+                    model_complexity=self.model_complexity,
                     min_detection_confidence=0.7,
                     min_tracking_confidence=0.65,
                 )
@@ -568,6 +577,20 @@ class VisionPipeline(threading.Thread):
         try:
             cap = cv2.VideoCapture(self.camera_index)
             self.camera_available = cap.isOpened()
+            if self.camera_available:
+                # Ask the driver for the target format up front. Every set()
+                # is a request the driver may ignore — the resize below stays
+                # as the fallback — but when it complies the per-frame
+                # cv2.resize disappears and, more importantly for input feel,
+                # BUFFERSIZE=1 stops the backend queueing frames we would
+                # only ever read late.
+                try:
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                    cap.set(cv2.CAP_PROP_FPS, self.capture_fps)
+                except Exception:
+                    pass
         except Exception as e:
             self.last_error = f"Camera initialization failed: {e}"
             self.camera_available = False
@@ -590,7 +613,8 @@ class VisionPipeline(threading.Thread):
                             time.sleep(0.01)
                             continue
 
-                        frame = cv2.resize(frame, (self.width, self.height))
+                        if frame.shape[1] != self.width or frame.shape[0] != self.height:
+                            frame = cv2.resize(frame, (self.width, self.height))
                         frame = cv2.flip(frame, 1)   # mirror for natural interaction
 
                         payload = self._process_frame(frame)
