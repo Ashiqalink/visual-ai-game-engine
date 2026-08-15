@@ -179,6 +179,16 @@ class OneEuroFilter:
         scalar = not isinstance(val, (tuple, list))
         vec: Tuple[float, ...] = (float(val),) if scalar else tuple(float(v) for v in val)
 
+        # A single NaN/inf sample would otherwise seed _x_prev/_dx_prev and
+        # every later output stays NaN until reset() — in the pipeline that is
+        # 12 hand-lost frames away, so one bad landmark poisoned the stream
+        # for as long as the hand stayed visible. Hold the last good value
+        # instead (or pass the bad sample through unfiltered if there is none).
+        if not all(math.isfinite(v) for v in vec):
+            if self._x_prev is not None:
+                return self._x_prev[0] if self._scalar else self._x_prev
+            return val
+
         # Shape change invalidates the history (same reasoning as GenericStreamFilter).
         if self._x_prev is not None and (scalar != self._scalar or len(vec) != len(self._x_prev)):
             self.reset()
