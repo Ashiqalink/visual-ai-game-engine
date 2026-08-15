@@ -86,7 +86,29 @@ def _probe_rembg() -> bool:
         return False
 
 
-REMBG_AVAILABLE = _probe_rembg()
+_REMBG_AVAILABLE: bool | None = None
+
+
+def rembg_available() -> bool:
+    """
+    Probe rembg on first use and cache the answer.
+
+    The probe actually imports rembg (onnxruntime and all), which costs ~2 s.
+    Running it at module import made every game pay that on startup — most of
+    them never touch background removal — so it is deferred to the first call
+    that needs the answer. `REMBG_AVAILABLE` stays importable via the module
+    `__getattr__` below.
+    """
+    global _REMBG_AVAILABLE
+    if _REMBG_AVAILABLE is None:
+        _REMBG_AVAILABLE = _probe_rembg()
+    return _REMBG_AVAILABLE
+
+
+def __getattr__(name: str):
+    if name == "REMBG_AVAILABLE":
+        return rembg_available()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ── Channel helpers ───────────────────────────────────────────────────────────
@@ -273,7 +295,7 @@ def remove_background(image: np.ndarray, model: str = "isnet-general-use") -> np
     ``isnet-general-use`` holds hard edges better than the default ``u2net``,
     which matters for line art. The first call downloads the model.
     """
-    if not REMBG_AVAILABLE:
+    if not rembg_available():
         raise RuntimeError(
             "rembg is not installed. Install it with:\n"
             '    pip install "rembg[cpu]"\n'
@@ -515,7 +537,7 @@ def clean_sprite(image: np.ndarray, mode: BackgroundMode = "auto",
         elif background_uniformity(rgba) > 0.75:
             mode = "chroma"
         else:
-            mode = "rembg" if REMBG_AVAILABLE else "chroma"
+            mode = "rembg" if rembg_available() else "chroma"
 
     if mode == "chroma":
         rgba = chroma_key(rgba, key=key, tolerance=tolerance)
