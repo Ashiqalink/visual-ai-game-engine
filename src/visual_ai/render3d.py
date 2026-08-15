@@ -192,7 +192,9 @@ class Mesh3D:
         ], dtype=np.float64)
 
         faces = [
-            [0, 1, 2, 3],  # Base
+            # Base wound to face down/outward — [0, 1, 2, 3] passed the screen-
+            # space cull from below, so the underside painted through the mesh.
+            [3, 2, 1, 0],  # Base
             [0, 1, 4],     # Side 1
             [1, 2, 4],     # Side 2
             [2, 3, 4],     # Side 3
@@ -237,12 +239,21 @@ class Mesh3D:
         verts.append([0.0, half_h, 0.0])
         verts.append([0.0, -half_h, 0.0])
 
-        # Top ring & Bottom ring
+        # Top ring, then bottom ring. The rings must be contiguous blocks:
+        # the face indices below address top vertex i as 2 + i and bottom
+        # vertex i as 2 + segments + i. The old interleaved append (top,
+        # bottom, top, bottom, …) silently made every cap and side face a
+        # zigzag mix of top and bottom vertices — the "caps" were not even
+        # planar, so no winding could render them right.
         for i in range(segments):
             theta = 2.0 * math.pi * i / segments
             x = radius * math.cos(theta)
             z = radius * math.sin(theta)
             verts.append([x, half_h, z])   # 2 + i
+        for i in range(segments):
+            theta = 2.0 * math.pi * i / segments
+            x = radius * math.cos(theta)
+            z = radius * math.sin(theta)
             verts.append([x, -half_h, z])  # 2 + segments + i
 
         for i in range(segments):
@@ -252,12 +263,15 @@ class Mesh3D:
             bot1 = 2 + segments + i
             bot2 = 2 + segments + next_i
 
-            # Top cap
-            faces.append([0, top2, top1])
+            # Cap windings match the side quads' outward orientation — the old
+            # [0, top2, top1] / [1, bot1, bot2] order failed the screen-space
+            # cull, so looking down at a cylinder hid the top disc and painted
+            # the bottom one through the body.
+            faces.append([0, top1, top2])
             # Bottom cap
-            faces.append([1, bot1, bot2])
-            # Side quad
-            faces.append([top1, top2, bot2, bot1])
+            faces.append([1, bot2, bot1])
+            # Side quad, wound to match the caps' outward orientation
+            faces.append([top2, top1, bot1, bot2])
 
         return cls(vertices=np.array(verts, dtype=np.float64), faces=faces)
 
@@ -357,11 +371,16 @@ class Mesh3D:
         norms = np.linalg.norm(verts, axis=1, keepdims=True)
         verts = (verts / norms) * radius
 
+        # The textbook CCW-outward winding is backwards under this renderer's
+        # screen-space cull convention (every other primitive here winds the
+        # opposite way): all 20 camera-facing triangles were culled and the 20
+        # back faces drawn, so the mesh rendered inside-out. Each face is
+        # reversed to match the cube/sphere/prism orientation.
         faces = [
-            [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
-            [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
-            [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
-            [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]
+            [5, 11, 0], [1, 5, 0], [7, 1, 0], [10, 7, 0], [11, 10, 0],
+            [9, 5, 1], [4, 11, 5], [2, 10, 11], [6, 7, 10], [8, 1, 7],
+            [4, 9, 3], [2, 4, 3], [6, 2, 3], [8, 6, 3], [9, 8, 3],
+            [5, 9, 4], [11, 4, 2], [10, 2, 6], [7, 6, 8], [1, 8, 9]
         ]
         return cls(vertices=verts, faces=faces)
 
