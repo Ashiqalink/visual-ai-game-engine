@@ -2,6 +2,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cstdlib>
+#include <memory>
 
 namespace vision_engine {
 
@@ -17,23 +18,27 @@ void GameEngine::set_target_position(float x, float y) {
     m_target_y = y;
 }
 
-int GameEngine::add_entity(std::string name, float x, float y, float z,
-                           float vx, float vy, float vz,
-                           float w, float h, float d,
-                           Material mat) {
+EntityPtr GameEngine::add_entity(std::string name, float x, float y, float z,
+                                 float vx, float vy, float vz,
+                                 float w, float h, float d,
+                                 Material mat) {
     int id = m_next_entity_id++;
-    m_entities.push_back({id, name, x, y, z, 0.0f, 0.0f, 0.0f, vx, vy, vz, 0.0f, 0.0f, 0.0f, w, h, d, true, mat});
-    return id;
+    auto entity = std::make_shared<Entity>(Entity{
+        id, name, x, y, z, 0.0f, 0.0f, 0.0f, vx, vy, vz, 0.0f, 0.0f, 0.0f, w, h, d, true, mat});
+    m_entities.push_back(entity);
+    return entity;
 }
 
-int GameEngine::add_3d_element(std::string name, float x, float y, float z,
-                              float rx, float ry, float rz,
-                              float vx, float vy, float vz,
-                              float vrx, float vry, float vrz,
-                              float scale, Material mat) {
+EntityPtr GameEngine::add_3d_element(std::string name, float x, float y, float z,
+                                     float rx, float ry, float rz,
+                                     float vx, float vy, float vz,
+                                     float vrx, float vry, float vrz,
+                                     float scale, Material mat) {
     int id = m_next_entity_id++;
-    m_entities.push_back({id, name, x, y, z, rx, ry, rz, vx, vy, vz, vrx, vry, vrz, scale, scale, scale, true, mat});
-    return id;
+    auto entity = std::make_shared<Entity>(Entity{
+        id, name, x, y, z, rx, ry, rz, vx, vy, vz, vrx, vry, vrz, scale, scale, scale, true, mat});
+    m_entities.push_back(entity);
+    return entity;
 }
 
 void GameEngine::clear_entities() {
@@ -90,13 +95,13 @@ void GameEngine::update(float dt) {
 
     // Update general entities
     for (auto& entity : m_entities) {
-        if (!entity.active) continue;
-        entity.x += entity.vx * dt;
-        entity.y += entity.vy * dt;
-        entity.z += entity.vz * dt;
-        entity.rx = std::fmod(entity.rx + entity.vrx * dt, 360.0f);
-        entity.ry = std::fmod(entity.ry + entity.vry * dt, 360.0f);
-        entity.rz = std::fmod(entity.rz + entity.vrz * dt, 360.0f);
+        if (!entity->active) continue;
+        entity->x += entity->vx * dt;
+        entity->y += entity->vy * dt;
+        entity->z += entity->vz * dt;
+        entity->rx = std::fmod(entity->rx + entity->vrx * dt, 360.0f);
+        entity->ry = std::fmod(entity->ry + entity->vry * dt, 360.0f);
+        entity->rz = std::fmod(entity->rz + entity->vrz * dt, 360.0f);
     }
 
     // Block collisions

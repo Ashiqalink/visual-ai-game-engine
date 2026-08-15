@@ -1,6 +1,7 @@
 #ifndef ENGINE_HPP
 #define ENGINE_HPP
 
+#include <memory>
 #include <vector>
 #include <string>
 
@@ -70,24 +71,33 @@ struct Debris {
     Material material;
 };
 
+// Entities are held by shared_ptr rather than by value.
+//
+// The Python bindings hand entities out as live objects, so their addresses
+// have to stay put: a std::vector<Entity> reallocates on growth and every
+// previously returned Python wrapper would be left pointing at freed memory.
+// Shared ownership also means an entity the caller kept a reference to stays
+// valid after the engine that made it is gone.
+using EntityPtr = std::shared_ptr<Entity>;
+
 class GameEngine {
 public:
     GameEngine(float width = 800.0f, float height = 600.0f);
 
     void update(float dt);
     void set_target_position(float x, float y);
-    
+
     // General Entity Management
-    int add_entity(std::string name = "Entity", float x = 0.0f, float y = 0.0f, float z = 0.0f,
-                   float vx = 0.0f, float vy = 0.0f, float vz = 0.0f,
-                   float w = 1.0f, float h = 1.0f, float d = 1.0f,
-                   Material mat = Material());
-    int add_3d_element(std::string name = "3DElement", float x = 0.0f, float y = 0.0f, float z = 0.0f,
-                       float rx = 0.0f, float ry = 0.0f, float rz = 0.0f,
-                       float vx = 0.0f, float vy = 0.0f, float vz = 0.0f,
-                       float vrx = 0.0f, float vry = 0.0f, float vrz = 0.0f,
-                       float scale = 1.0f, Material mat = Material());
-    const std::vector<Entity>& get_entities() const { return m_entities; }
+    EntityPtr add_entity(std::string name = "Entity", float x = 0.0f, float y = 0.0f, float z = 0.0f,
+                         float vx = 0.0f, float vy = 0.0f, float vz = 0.0f,
+                         float w = 1.0f, float h = 1.0f, float d = 1.0f,
+                         Material mat = Material());
+    EntityPtr add_3d_element(std::string name = "3DElement", float x = 0.0f, float y = 0.0f, float z = 0.0f,
+                             float rx = 0.0f, float ry = 0.0f, float rz = 0.0f,
+                             float vx = 0.0f, float vy = 0.0f, float vz = 0.0f,
+                             float vrx = 0.0f, float vry = 0.0f, float vrz = 0.0f,
+                             float scale = 1.0f, Material mat = Material());
+    const std::vector<EntityPtr>& get_entities() const { return m_entities; }
     void clear_entities();
 
     // Legacy Block & Debris Management
@@ -120,7 +130,7 @@ private:
     float m_target_y;
 
     int m_next_entity_id = 1;
-    std::vector<Entity> m_entities;
+    std::vector<EntityPtr> m_entities;
     std::vector<Block> m_blocks;
     std::vector<Debris> m_debris;
 };

@@ -59,6 +59,24 @@ class Debris:
     material: Material = field(default_factory=Material)
 
 
+def _coerce_material(material: Optional[Material]) -> Material:
+    """
+    Resolve a ``material=`` argument the way the C++ binding does.
+
+    Both engines default to a fresh Material when none is given and reject
+    anything that is not one: the binding cannot convert a stray dict, and a
+    fallback that accepted it silently would only fail later, in the renderer,
+    on whichever machine had no compiled core.
+    """
+    if material is None:
+        return Material()
+    if not isinstance(material, Material):
+        raise TypeError(
+            f"material must be a visual_ai.Material, got {type(material).__name__}"
+        )
+    return material
+
+
 class PythonFallbackEngine:
     """
     Pure Python fallback physics and scene engine used when C++ engine_core extension is not compiled.
@@ -118,7 +136,7 @@ class PythonFallbackEngine:
             depth = d
         ent_id = self._next_entity_id
         self._next_entity_id += 1
-        mat = material if material is not None else Material()
+        mat = _coerce_material(material)
         entity = Entity(
             id=ent_id,
             name=name,
@@ -159,7 +177,7 @@ class PythonFallbackEngine:
         """Add a 3D Element entity to the engine scene."""
         ent_id = self._next_entity_id
         self._next_entity_id += 1
-        mat = material if material is not None else Material()
+        mat = _coerce_material(material)
         entity = Entity(
             id=ent_id,
             name=name,
@@ -194,7 +212,7 @@ class PythonFallbackEngine:
         self.entities.clear()
 
     def add_block(self, x: float, y: float, w: float, h: float, health: float, material: Optional[Material] = None):
-        mat = material if material is not None else Material()
+        mat = _coerce_material(material)
         self.blocks.append(Block(x, y, w, h, health, health, True, mat))
 
     def get_blocks(self) -> List[Block]:
