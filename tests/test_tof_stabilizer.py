@@ -141,3 +141,80 @@ class TestToFStabilizer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestInjectableClock(unittest.TestCase):
+    """
+    The calibration window is defined in seconds, so anything driving the
+    stabilizer faster than real time silently samples far more input than the
+    window implies. A harness stepping 500 simulated fps turns a 1 s "hold
+    still" window into 500 frames of whatever the input is doing next.
+    """
+
+    def test_window_follows_the_injected_clock(self):
+        now = [100.0]
+        stab = ToFStabilizer(clock=lambda: now[0])
+        stab.begin(duration=1.0)
+        self.assertEqual(stab.state, "sampling")
+
+        for _ in range(30):
+            now[0] += 1.0 / 30.0
+            stab.feed(0.45)
+        self.assertEqual(stab.state, "sampling", "window closed early")
+
+        now[0] += 0.1
+        stab.tick()
+        self.assertEqual(stab.state, "active")
+
+    def test_progress_uses_the_injected_clock(self):
+        now = [0.0]
+        stab = ToFStabilizer(clock=lambda: now[0])
+        stab.begin(duration=2.0)
+        now[0] = 1.0
+        self.assertAlmostEqual(stab.progress, 0.5, places=2)
+
+    def test_calibrating_on_moving_input_produces_a_huge_gate(self):
+        """
+        Documents the failure mode rather than fixing it: nothing rejects a
+        calibration run against a moving hand, and the gate it computes can be
+        wider than the whole range of motion a game cares about.
+        """
+        now = [0.0]
+        stab = ToFStabilizer(clock=lambda: now[0])
+        stab.begin(duration=1.0)
+        for i in range(30):
+            now[0] += 1.0 / 30.0
+            stab.feed(0.30 + 0.30 * (i % 3) / 2.0)     # sweeping 0.30 - 0.60 m
+        now[0] += 0.1
+        stab.tick()
+        self.assertEqual(stab.state, "active")
+        self.assertGreater(stab.noise_gate, 0.25,
+                           "expected an implausibly wide gate from moving input")
+
+    def test_default_clock_reads_wall_time_lazily(self):
+        """
+        The default must resolve `time.time` through the module on each call,
+        not capture it: the benches fast-forward a calibration by replacing
+        `tof_stabilizer.time` wholesale, and a captured reference ignores that.
+        """
+        import visual_ai.tof_stabilizer as module
+
+        stab = ToFStabilizer()
+        self.assertIsNone(stab.clock)
+
+        class _FakeTime:
+            def __init__(self): self.value = 500.0
+            def time(self): return self.value
+
+        fake = _FakeTime()
+        real, module.time = module.time, fake
+        try:
+            stab.begin(duration=1.0)
+            for _ in range(10):
+                stab.feed(0.45)
+            self.assertEqual(stab.state, "sampling")
+            fake.value += 1.1
+            stab.tick()
+            self.assertEqual(stab.state, "active")
+        finally:
+            module.time = real
