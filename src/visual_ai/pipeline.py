@@ -33,14 +33,13 @@ Queue payload (dict)
   "fingers_extended"  : (bool,) * 5,  # thumb, index, middle, ring, pinky
   "is_fist"           : bool,
   "is_open_palm"      : bool,
+  "grip_openness"     : float,        # 0.0 curled fist … 1.0 fingers straight
+
   "smoothing_enabled" : bool,         # One-Euro landmark smoothing currently on?
   "z_delta"           : float,        # raw Z push magnitude (debug)
   "xy_drift"          : float,        # lateral drift during a Z push (px)
 
-  # 3-finger lock
-  "lock_progress"        : float,     # 0.0 → 1.0
-  "three_finger_locked"  : bool,
-  "locked_fingers"       : (bool, bool, bool),   # thumb, index, middle
+  # 3-finger pinch
   "is_3_finger_pinching" : bool,
 
   # Depth (see tof_stabilizer.py)
@@ -209,13 +208,10 @@ class _GestureState:
         self.z_cooldown: int        = 0
         self.z_start_xy             = None   # type: tuple[int,int] | None
 
-        # Finger lock state
-        self.locked_pos: tuple[float, float] | None = None
+        # Frames since a hand was last seen (drives the reset below)
         self.lost_frames: int = 0
 
-        # 3-Finger Lock & Pinch state
-        self.lock_progress: float = 0.0          # 0.0 to 1.0
-        self.three_finger_locked: bool = False   # True when lock_progress reaches 1.0
+        # 3-Finger Pinch state
         self.was_3_pinching: bool = False        # Edge trigger for 3-finger pinch
 
         # Hand sign debounce
@@ -236,10 +232,7 @@ class _GestureState:
         self.z_history.clear()
         self.z_cooldown = 0
         self.z_start_xy = None
-        self.locked_pos = None
         self.lost_frames = 0
-        self.lock_progress = 0.0
-        self.three_finger_locked = False
         self.was_3_pinching = False
         self.sign = SIGN_UNKNOWN
         self.sign_candidate = SIGN_UNKNOWN
@@ -585,14 +578,8 @@ class VisionPipeline(threading.Thread):
             hand_results = self._mp_hands.process(rgb)
 
             if hand_results.multi_hand_landmarks:
-                selected_lm = self._select_locked_hand(hand_results.multi_hand_landmarks)
-                if selected_lm is not None:
-                    gesture = self._extract_gesture(selected_lm)
-                else:
-                    self._gs.lost_frames += 1
-                    if self._gs.lost_frames > 12:
-                        self._gs.reset()
-                        self.jitter_analyzer.reset()
+                self._gs.lost_frames = 0
+                gesture = self._extract_gesture(hand_results.multi_hand_landmarks[0].landmark)
             else:
                 self._gs.lost_frames += 1
                 if self._gs.lost_frames > 12:
@@ -608,54 +595,6 @@ class VisionPipeline(threading.Thread):
             **gesture,
         }
         return payload
-
-    def _select_locked_hand(self, multi_hand_landmarks):
-        """
-        Locks onto a single index finger. If multiple hands/fingers are detected,
-        returns the landmark set whose index tip is closest to the locked position.
-        If locked hand is not found within MAX_LOCK_DIST_PX, returns None until lost_frames expires.
-        """
-        gs = self._gs
-        W, H = self.width, self.height
-        MAX_LOCK_DIST_PX = 250.0  # max spatial jump allowed between consecutive frames
-
-        candidates = []
-        for hand_lms in multi_hand_landmarks:
-            lm = hand_lms.landmark
-            ix = lm[8].x * W
-            iy = lm[8].y * H
-            candidates.append((ix, iy, lm))
-
-        if not candidates:
-            return None
-
-        if gs.locked_pos is None:
-            # First lock: take first detected hand
-            best_ix, best_iy, best_lm = candidates[0]
-            gs.locked_pos = (best_ix, best_iy)
-            gs.lost_frames = 0
-            return best_lm
-
-        # Find candidate closest to current locked position
-        lx, ly = gs.locked_pos
-        best_lm = None
-        best_dist = float('inf')
-        best_pos = None
-
-        for ix, iy, lm in candidates:
-            dist = math.sqrt((ix - lx) ** 2 + (iy - ly) ** 2)
-            if dist < best_dist:
-                best_dist = dist
-                best_lm = lm
-                best_pos = (ix, iy)
-
-        if best_dist <= MAX_LOCK_DIST_PX:
-            gs.locked_pos = best_pos
-            gs.lost_frames = 0
-            return best_lm
-
-        # All candidates are too far from locked position -> likely secondary finger / noise
-        return None
 
     # ── Gesture extraction ────────────────────────────────────────────────────
     def _extract_gesture(self, lm) -> dict:
@@ -715,14 +654,7 @@ class VisionPipeline(threading.Thread):
         z_delta = 0.0
         xy_drift = 0.0
 
-        # ── 3-Finger Lock System & 3-Finger Pinch Trigger ────────────────────
-        d_ti = math.sqrt((raw_tx - raw_ix)**2 + (raw_ty - raw_iy)**2)
-        d_tm = math.sqrt((raw_tx - raw_mx)**2 + (raw_ty - raw_my)**2)
-        d_im = math.sqrt((raw_ix - raw_mx)**2 + (raw_iy - raw_my)**2)
-
-        # User must keep fingers distinct (separated) to build lock progress slowly
-        distinct = (d_ti > 30.0) and (d_tm > 30.0) and (d_im > 30.0)
-
+        # ── 3-Finger Pinch Trigger ───────────────────────────────────────────
         # Distance from each fingertip to centroid
         dist_t_c = math.sqrt((raw_tx - c_x)**2 + (raw_ty - c_y)**2)
         dist_i_c = math.sqrt((raw_ix - c_x)**2 + (raw_iy - c_y)**2)
@@ -733,28 +665,11 @@ class VisionPipeline(threading.Thread):
         effective_pinch_radius = base_pinch_radius * max(1.0, float(self.movement_magnification))
         is_3_pinching = max_dist_to_centroid < effective_pinch_radius
 
-        if distinct:
-            # Increment lock progress slowly (~40 frames / ~1.3s for testing phase)
-            gs.lock_progress = min(1.0, gs.lock_progress + 0.025)
-        elif not is_3_pinching and not gs.three_finger_locked:
-            # Decay lock progress if not distinct and not locked
-            gs.lock_progress = max(0.0, gs.lock_progress - 0.04)
-
-        if gs.lock_progress >= 1.0:
-            gs.three_finger_locked = True
-
-        thumb_locked  = gs.lock_progress >= 0.33
-        index_locked  = gs.lock_progress >= 0.66
-        middle_locked = gs.lock_progress >= 1.0
-
-        # Trigger action when all 3 fingers are locked AND user pinches all 3 to middle
-        if gs.three_finger_locked:
-            if is_3_pinching and not gs.was_3_pinching:
-                click_fired = True
-            gs.was_3_pinching = is_3_pinching
-            gs.pinch_active = is_3_pinching
-        else:
-            gs.pinch_active = False
+        # Trigger action on the rising edge of a 3-finger pinch
+        if is_3_pinching and not gs.was_3_pinching:
+            click_fired = True
+        gs.was_3_pinching = is_3_pinching
+        gs.pinch_active = is_3_pinching
 
         # ── 3. Finger extension & hand sign ───────────────────────────────────
         # Anchored at the wrist (landmark 0): a finger counts as extended when
@@ -793,6 +708,26 @@ class VisionPipeline(threading.Thread):
         # Debounced so a half-closed hand mid-transition cannot flap the sign
         # back and forth and fire a game action on every other frame.
         hand_sign = self._debounce_sign(classify_hand_sign(fingers_extended))
+
+        # Continuous grip measure, deliberately NOT debounced and not
+        # thresholded into booleans. `hand_sign` needs _SIGN_DEBOUNCE frames of
+        # one steady sign before it changes, and a hand on its way open walks
+        # through several signs (unknown → point → peace → …), each one
+        # restarting that count — so `is_fist` can keep reading True for a dozen
+        # frames after the fingers have visibly started to move. Anything that
+        # must react the instant a grip *begins* to open (a slingshot release, a
+        # throw) should threshold this instead.
+        #   0.0 = every finger curled into the palm, 1.0 = fingers straight out.
+        # Per finger, how far the tip reaches past its own PIP joint, measured
+        # from the wrist and scaled by the palm so hand size and camera distance
+        # drop out.
+        def curl(tip: int, pip: int) -> float:
+            reach = (dist3d(tip, 0) - dist3d(pip, 0)) / (0.5 * palm_span)
+            return min(1.0, max(0.0, reach))
+
+        grip_openness = sum(
+            curl(tip, pip) for tip, pip in ((8, 6), (12, 10), (16, 14), (20, 18))
+        ) / 4.0
 
         # ── 4. ToF Depth Lookup ───────────────────────────────────────────────
         tof_active, tof_z_raw, depth_source = self.sample_tof_depth(index_pos[0], index_pos[1], z_val)
@@ -841,6 +776,7 @@ class VisionPipeline(threading.Thread):
             "fingers_extended":    fingers_extended,
             "is_fist":             hand_sign == SIGN_FIST,
             "is_open_palm":        hand_sign == SIGN_OPEN_PALM,
+            "grip_openness":       grip_openness,
             "smoothing_enabled":   self.smoothing_enabled,
             "z_delta":             z_delta,
             "xy_drift":            xy_drift,
@@ -848,9 +784,6 @@ class VisionPipeline(threading.Thread):
             "tof_z_m":             tof_z_m,
             "tof_z_raw":           tof_z_raw,
             "depth_source":        depth_source,
-            "lock_progress":       gs.lock_progress,
-            "three_finger_locked": gs.three_finger_locked,
-            "locked_fingers":      (thumb_locked, index_locked, middle_locked),
             "is_3_finger_pinching":is_3_pinching,
             "jitter":              jitter_stats,
             # Stabilizer telemetry
@@ -1075,8 +1008,8 @@ class VisionPipeline(threading.Thread):
     def _empty_gesture(self) -> dict:
         """
         No-hand payload. Must carry every key `_extract_gesture` emits — a
-        consumer that indexes `payload["lock_progress"]` should not start
-        raising KeyError the moment the hand leaves the frame.
+        consumer that indexes `payload["is_3_finger_pinching"]` should not
+        start raising KeyError the moment the hand leaves the frame.
         """
         return {
             "hand_visible":      False,
@@ -1093,6 +1026,7 @@ class VisionPipeline(threading.Thread):
             "fingers_extended":  (False, False, False, False, False),
             "is_fist":           False,
             "is_open_palm":      False,
+            "grip_openness":     0.0,
             "smoothing_enabled": self.smoothing_enabled,
             "z_delta":           0.0,
             "xy_drift":          0.0,
@@ -1100,9 +1034,6 @@ class VisionPipeline(threading.Thread):
             "tof_z_m":           0.0,
             "tof_z_raw":         0.0,
             "depth_source":      "RGB MediaPipe Estimate",
-            "lock_progress":       0.0,
-            "three_finger_locked": False,
-            "locked_fingers":      (False, False, False),
             "is_3_finger_pinching": False,
             # Full zeroed stat dict rather than {} — the HUD reads
             # jitter["raw_jitter_std"] and used to see an empty mapping here.
