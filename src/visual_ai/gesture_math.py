@@ -14,13 +14,18 @@ Point2D = Union[Tuple[float, float], Dict[str, float], Any]
 
 def _extract_xy(pt: Point2D) -> Tuple[float, float]:
     """Helper to extract (x, y) coordinates from tuple, dict, or MediaPipe landmark object."""
-    if isinstance(pt, tuple) or isinstance(pt, list):
+    if isinstance(pt, (tuple, list)):
         return (float(pt[0]), float(pt[1]))
     if isinstance(pt, dict):
         return (float(pt.get("x", 0.0)), float(pt.get("y", 0.0)))
     if hasattr(pt, "x") and hasattr(pt, "y"):
         return (float(pt.x), float(pt.y))
-    raise ValueError(f"Unsupported point format: {pt}")
+    # ndarrays and other indexable sequences (the package re-exports numpy,
+    # so arrays are a completely ordinary way for a game to hold a point).
+    try:
+        return (float(pt[0]), float(pt[1]))
+    except (TypeError, IndexError, KeyError):
+        raise ValueError(f"Unsupported point format: {pt}")
 
 
 def get_landmark_distance(pt1: Point2D, pt2: Point2D) -> float:
