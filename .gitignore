@@ -48,3 +48,7 @@ SKILLS.md
 captures/
 logs/
 
+# Test-bench output (regenerate with benchmarks/run_all.py --html)
+benchmarks/bench_report.html
+benchmarks/*.json
+
