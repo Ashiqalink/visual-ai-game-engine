@@ -5,8 +5,10 @@ Detects BOTH:
   • Face coordinates  (MediaPipe FaceDetection or fallback centre)
   • Hand gestures     (MediaPipe Hands)
       – index-fingertip position       → index_pos
-      – pinch gesture (thumb+index)    → is_pinching  (debounced)
-      – Z-push click (forward finger)  → click_just_fired
+      – 3-finger pinch (thumb+index+middle within a centroid radius)
+                                       → is_pinching  (not debounced)
+      – click_just_fired               → rising edge of the 3-finger pinch;
+                                         with enable_z_click also a Z push
       – index-finger isolation         → is_index_isolated
 
 Queue payload (dict)
@@ -317,8 +319,9 @@ class VisionPipeline(threading.Thread):
     camera_index : int
         OpenCV camera index (default 0).
     smooth_alpha : float
-        EMA smoothing factor for landmark positions (0 < α ≤ 1).
-        Lower = smoother but laggier; 0.25 is a good default.
+        Resting smoothness (0 < α ≤ 1), mapped to the One-Euro filter's
+        min_cutoff via `ema_alpha_to_cutoff` — it is no longer a literal EMA
+        factor. Lower = steadier at rest but laggier; default 0.20.
     max_hands : int
         How many hands MediaPipe tracks, and how many gesture slots the payload
         carries. 1 is measurably cheaper per frame; 2 is the default because it
@@ -535,8 +538,9 @@ class VisionPipeline(threading.Thread):
         if not (self.tof_active or self.tof_simulated):
             print(
                 "[VisionPipeline] begin_stabilization() called with no ToF source — "
-                "set pipeline.tof_simulated = True or attach a sensor first. "
-                "Calibration will collect no samples and abort."
+                "attach a sensor, or set pipeline.tof_simulated = True with a real "
+                "camera and a tracked hand (samples are only fed from gesture "
+                "extraction). Calibration will collect no samples and abort."
             )
         self.tof_stabilizer.begin(duration)
 
