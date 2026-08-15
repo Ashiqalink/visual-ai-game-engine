@@ -29,6 +29,7 @@ Arrays are ``uint8``. Three-channel input is assumed RGB; use
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Literal
 
@@ -476,9 +477,18 @@ def blit_sprite(frame: np.ndarray, sprite: np.ndarray, cx: int, cy: int,
             sprite = resize(sprite, size, size)
 
     if angle:
-        dim = sprite.shape[0]
-        matrix = cv2.getRotationMatrix2D((dim / 2.0, dim / 2.0), angle, 1.0)
-        sprite = cv2.warpAffine(sprite, matrix, (dim, dim), flags=cv2.INTER_CUBIC,
+        # Rotate about the sprite's true centre into a canvas that covers the
+        # rotated bounding box. The old code used shape[0] (height) for both
+        # the pivot and a square output canvas, so a non-square sprite rotated
+        # about the wrong point and was cropped to its height.
+        h, w = sprite.shape[:2]
+        matrix = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle, 1.0)
+        cos, sin = abs(matrix[0, 0]), abs(matrix[0, 1])
+        out_w = int(math.ceil(w * cos + h * sin))
+        out_h = int(math.ceil(w * sin + h * cos))
+        matrix[0, 2] += out_w / 2.0 - w / 2.0
+        matrix[1, 2] += out_h / 2.0 - h / 2.0
+        sprite = cv2.warpAffine(sprite, matrix, (out_w, out_h), flags=cv2.INTER_CUBIC,
                                 borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
 
     height, width = sprite.shape[:2]
