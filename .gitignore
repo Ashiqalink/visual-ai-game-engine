@@ -38,6 +38,10 @@ SKILLS.md
 *.onnx
 *.pb
 *.tflite
+# MediaPipe Tasks model bundles. Fetched on demand — examples/pose_attribution.py
+# pulls pose_landmarker_lite.task (~5.5 MB) with --download.
+*.task
+assets/
 *.xml
 *.yml
 *.yaml
