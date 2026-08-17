@@ -47,6 +47,10 @@ from visual_ai.gesture_math import (
     get_hand_center_and_radius,
     get_landmark_velocity,
 )
+from visual_ai.gesture_mlp import (
+    GestureMLP,
+    landmarks_to_features,
+)
 from visual_ai.spritegen import (
     CreatureSpec,
     render_creature,
