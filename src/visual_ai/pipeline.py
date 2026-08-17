@@ -61,6 +61,9 @@ Queue payload (dict)
   # Depth occupancy grid — ONLY when pipeline.emit_depth_grid is True
   "depth_grid" : ndarray | None,      # (rows, cols) float32 metres, 0 = no return
 
+  # Person segmentation mask — ONLY when pipeline.emit_person_mask is True
+  "person_mask" : ndarray | None,     # (H, W) uint8, 255 = person, 0 = background
+
   "smoothing_enabled" : bool,         # One-Euro landmark smoothing currently on?
   "z_delta"           : float,        # raw Z push magnitude (debug)
   "xy_drift"          : float,        # lateral drift during a Z push (px)
@@ -83,9 +86,9 @@ Queue payload (dict)
 }
 
 Every key above is present on EVERY payload, including frames with no hand and
-simulated-camera frames, so consumers can index directly. The one exception is
-"depth_grid", which is opt-in precisely because it is the only key whose size is
-not O(1) and every game drains a maxsize=1 queue.
+simulated-camera frames, so consumers can index directly. The exceptions are
+"depth_grid" and "person_mask", which are opt-in precisely because they are the
+only keys whose size is not O(1) and every game drains a maxsize=1 queue.
 
 Hand slots
 ----------
@@ -382,6 +385,15 @@ class VisionPipeline(threading.Thread):
         # game drains a maxsize=1 queue that would then carry it every frame.
         self.emit_depth_grid: bool = False
         self.depth_grid_size: tuple[int, int] = (32, 24)   # (cols, rows)
+
+        # ── Person segmentation mask (opt-in) ─────────────────────────────────
+        # Same reasoning as emit_depth_grid: off by default, since the mask is
+        # O(frame) and every existing game drains a maxsize=1 queue that would
+        # otherwise carry it every frame whether a consumer wants it or not.
+        # The model is built lazily on first use — see _get_person_mask — so
+        # turning this on is the only thing that pays its download/init cost.
+        self.emit_person_mask: bool = False
+        self._person_segmenter = None
 
         self.disable_camera: bool   = False
 
@@ -765,6 +777,9 @@ class VisionPipeline(threading.Thread):
         if self.emit_depth_grid:
             payload["depth_grid"] = self._build_depth_grid(hands, face_box if face_visible else None)
 
+        if self.emit_person_mask:
+            payload["person_mask"] = self._get_person_mask(bgr_frame)
+
         return payload
 
     # ── Hand → slot assignment ────────────────────────────────────────────────
@@ -821,6 +836,34 @@ class VisionPipeline(threading.Thread):
             self._slot_anchor[s] = wrists[i]
             self._gs_slots[s].lost_frames = 0
         return assignment
+
+    # ── Person segmentation mask ──────────────────────────────────────────────
+    def _get_person_mask(self, bgr_frame: np.ndarray) -> np.ndarray | None:
+        """
+        uint8 mask, same (height, width) as ``bgr_frame``, 255 = person.
+
+        Builds :class:`~visual_ai.segment.PersonSegmenter` on first call —
+        which downloads its model weights on first use — rather than in
+        ``__init__``, so enabling ``emit_person_mask`` is the only thing that
+        pays that cost. A failure here (no network on first use, a missing
+        model file) disables the flag rather than raising every frame, the
+        same way a missing MediaPipe module leaves ``self._mp_face`` as None
+        instead of crashing construction.
+        """
+        if self._person_segmenter is None:
+            try:
+                from visual_ai.segment import PersonSegmenter
+                self._person_segmenter = PersonSegmenter()
+            except Exception as e:
+                print(f"[VisionPipeline] PersonSegmenter init warning: {e}")
+                self.emit_person_mask = False
+                return None
+
+        try:
+            return self._person_segmenter.segment(bgr_frame)
+        except Exception as e:
+            print(f"[VisionPipeline] PersonSegmenter frame error: {e}")
+            return None
 
     # ── Depth occupancy grid ──────────────────────────────────────────────────
     def _build_depth_grid(self, hands: list[dict], face_box) -> np.ndarray | None:
@@ -1397,4 +1440,6 @@ class VisionPipeline(threading.Thread):
         }
         if self.emit_depth_grid:
             payload["depth_grid"] = self._build_depth_grid([], None)
+        if self.emit_person_mask:
+            payload["person_mask"] = self._get_person_mask(frame)
         return payload

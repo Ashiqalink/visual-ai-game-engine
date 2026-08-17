@@ -17,6 +17,7 @@ from visual_ai.noise_filter import (
 from visual_ai.render3d import Transform3D, Camera3D, Mesh3D, Renderer3D
 from visual_ai.tof_stabilizer import ToFStabilizer
 from visual_ai.jitter_analyzer import JitterAnalyzer
+from visual_ai.segment import PersonSegmenter
 from visual_ai.math_utils import (
     Vector2,
     Vector3,
@@ -107,6 +108,7 @@ __all__ = [
     "ema_alpha_to_cutoff",
     "ToFStabilizer",
     "JitterAnalyzer",
+    "PersonSegmenter",
     "Material",
     "ShaderType",
     "Entity",
