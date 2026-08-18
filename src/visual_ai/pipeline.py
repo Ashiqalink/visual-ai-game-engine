@@ -743,10 +743,23 @@ class VisionPipeline(threading.Thread):
     # ── Frame processing ──────────────────────────────────────────────────────
     def _process_frame(self, bgr_frame: np.ndarray) -> dict:
         """Run face + hand detection on one BGR frame. Returns full payload."""
-        rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-
         run_detection = (self._detection_frame_count % self.detection_stride == 0)
         self._detection_frame_count += 1
+
+        # The RGB copy exists only for the two `.process()` calls below, both of
+        # which are already gated on `run_detection` — so converting before this
+        # check meant a held frame (detection_stride > 1) paid a full-frame
+        # allocate and colour convert that nothing then read.
+        #
+        # `writeable = False` is what lets MediaPipe's Python wrapper pass the
+        # buffer straight to the graph: a writeable array is defensively copied
+        # on entry to every process() call, and with both a face and a hand
+        # graph we were paying that copy twice per frame. Nothing downstream
+        # mutates `rgb` — the frame handed to consumers is `bgr_frame`.
+        rgb = None
+        if run_detection:
+            rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+            rgb.flags.writeable = False
 
         # ── Face detection ────────────────────────────────────────────────────
         target_x = self.width  / 2.0
