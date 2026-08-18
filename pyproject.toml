@@ -7,7 +7,10 @@ name = "visual_ai"
 version = "0.3.0"
 description = "High-performance Computer Vision AI tracking and physics library for game developers"
 readme = "README.md"
-requires-python = ">=3.8"
+# Upper bound is mediapipe's, not ours: it publishes no wheels for 3.13+, so a
+# 3.13 interpreter fails at dependency resolution with a message that says
+# nothing about why. Cap it here so pip reports the real constraint instead.
+requires-python = ">=3.8,<3.13"
 license = { text = "Proprietary" }
 authors = [
     { name = "Ashiqalink" }
@@ -28,7 +31,7 @@ classifiers = [
 dependencies = [
     "numpy>=1.20.0",
     "opencv-python>=4.8.0",
-    "mediapipe>=0.10.14",
+    "mediapipe>=0.10.14,<=0.10.35",
 ]
 
 [project.urls]
