@@ -73,6 +73,12 @@ from visual_ai.imaging import (
     pad_to,
     REMBG_AVAILABLE,
 )
+from visual_ai.matting import (
+    PortraitMatter,
+    portrait_matte,
+    cut_out_person,
+    MODNET_AVAILABLE,
+)
 
 # Re-exported third-party surface.
 #
@@ -167,6 +173,11 @@ __all__ = [
     "autocrop",
     "pad_to",
     "REMBG_AVAILABLE",
+    # Portrait matting (MODNet)
+    "PortraitMatter",
+    "portrait_matte",
+    "cut_out_person",
+    "MODNET_AVAILABLE",
     # Re-exported dependencies
     "np",
 ]
