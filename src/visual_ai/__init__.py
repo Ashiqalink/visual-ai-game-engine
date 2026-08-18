@@ -77,7 +77,11 @@ from visual_ai.imaging import (
     clean_sprite,
     autocrop,
     pad_to,
-    REMBG_AVAILABLE,
+    resize,
+    bleed_edges,
+    background_uniformity,
+    composite_over,
+    blit_sprite,
 )
 from visual_ai.matting import (
     PortraitMatter,
@@ -85,6 +89,16 @@ from visual_ai.matting import (
     cut_out_person,
     MODNET_AVAILABLE,
 )
+
+
+def __getattr__(name: str):
+    # REMBG_AVAILABLE is served lazily: resolving it actually imports rembg
+    # (~2 s of onnxruntime), which every game used to pay at startup whether
+    # or not it ever removed a background. Importing it eagerly above would
+    # defeat imaging's own deferral.
+    if name == "REMBG_AVAILABLE":
+        return imaging.rembg_available()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # Re-exported third-party surface.
 #
@@ -180,6 +194,11 @@ __all__ = [
     "clean_sprite",
     "autocrop",
     "pad_to",
+    "resize",
+    "bleed_edges",
+    "background_uniformity",
+    "composite_over",
+    "blit_sprite",
     "REMBG_AVAILABLE",
     # Portrait matting (MODNet)
     "PortraitMatter",

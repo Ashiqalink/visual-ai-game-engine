@@ -140,6 +140,16 @@ class JitterAnalyzer:
             n = min(len(raw), len(smooth))
             raw, smooth = raw[:n], smooth[:n]
 
+        # A dimensionality change mid-stream ((x, y) frames followed by an
+        # (x, y, z) one) would put ragged tuples in the window: np.asarray in
+        # _detrended_metrics raises on the ragged list, and _sub's zip would
+        # silently truncate the delta. Restart the window in the new arity.
+        if self.raw_positions and len(raw) != len(self.raw_positions[-1]):
+            self.raw_positions.clear()
+            self.smoothed_positions.clear()
+            self.deltas_raw.clear()
+            self.deltas_smoothed.clear()
+
         if self.raw_positions:
             prev_raw = self.raw_positions[-1]
             prev_smooth = self.smoothed_positions[-1]

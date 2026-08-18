@@ -5,8 +5,10 @@ Detects BOTH:
   • Face coordinates  (MediaPipe FaceDetection or fallback centre)
   • Hand gestures     (MediaPipe Hands)
       – index-fingertip position       → index_pos
-      – pinch gesture (thumb+index)    → is_pinching  (debounced)
-      – Z-push click (forward finger)  → click_just_fired
+      – 3-finger pinch (thumb+index+middle within a centroid radius)
+                                       → is_pinching  (not debounced)
+      – click_just_fired               → rising edge of the 3-finger pinch;
+                                         with enable_z_click also a Z push
       – index-finger isolation         → is_index_isolated
 
 Queue payload (dict)
@@ -321,8 +323,9 @@ class VisionPipeline(threading.Thread):
     camera_index : int
         OpenCV camera index (default 0).
     smooth_alpha : float
-        EMA smoothing factor for landmark positions (0 < α ≤ 1).
-        Lower = smoother but laggier; 0.25 is a good default.
+        Resting smoothness (0 < α ≤ 1), mapped to the One-Euro filter's
+        min_cutoff via `ema_alpha_to_cutoff` — it is no longer a literal EMA
+        factor. Lower = steadier at rest but laggier; default 0.20.
     max_hands : int
         How many hands MediaPipe tracks, and how many gesture slots the payload
         carries. 1 is measurably cheaper per frame; 2 is the default because it
@@ -336,6 +339,10 @@ class VisionPipeline(threading.Thread):
         recorded clip at ~50% less MediaPipe time for ~22px of fingertip rmse
         and negligible added lag; stride=3 saves more but starts costing real
         accuracy. Tune per game, not here.
+    model_complexity : int
+        MediaPipe Hands model tier: 1 (default) is the full landmark model,
+        0 is the lite model — noticeably cheaper per frame at a small cost in
+        fingertip accuracy. The speed knob to reach for on low-end machines.
     """
 
     def __init__(
@@ -353,6 +360,7 @@ class VisionPipeline(threading.Thread):
         gesture_mlp: GestureMLP | None = None,
         max_hands: int = 2,
         detection_stride: int = 1,
+        model_complexity: int = 1,
     ):
         super().__init__(daemon=True)
         self.result_queue  = result_queue
@@ -438,12 +446,16 @@ class VisionPipeline(threading.Thread):
         # ── MediaPipe: Hands ──────────────────────────────────────────────────
         self._mp_hands = None
         self.max_hands = max(1, int(max_hands))
+        # 1 is MediaPipe's full landmark model; 0 trades a little fingertip
+        # accuracy for a substantially cheaper per-frame inference — worth
+        # exposing so a low-end machine can hold its frame rate.
+        self.model_complexity = 0 if int(model_complexity) <= 0 else 1
         if mp_hands_module is not None:
             try:
                 self._mp_hands = mp_hands_module.Hands(
                     static_image_mode=False,
                     max_num_hands=self.max_hands,
-                    model_complexity=1,
+                    model_complexity=self.model_complexity,
                     min_detection_confidence=0.7,
                     min_tracking_confidence=0.65,
                 )
@@ -575,8 +587,9 @@ class VisionPipeline(threading.Thread):
         if not (self.tof_active or self.tof_simulated):
             print(
                 "[VisionPipeline] begin_stabilization() called with no ToF source — "
-                "set pipeline.tof_simulated = True or attach a sensor first. "
-                "Calibration will collect no samples and abort."
+                "attach a sensor, or set pipeline.tof_simulated = True with a real "
+                "camera and a tracked hand (samples are only fed from gesture "
+                "extraction). Calibration will collect no samples and abort."
             )
         self.tof_stabilizer.begin(duration)
 
@@ -604,6 +617,20 @@ class VisionPipeline(threading.Thread):
         try:
             cap = cv2.VideoCapture(self.camera_index)
             self.camera_available = cap.isOpened()
+            if self.camera_available:
+                # Ask the driver for the target format up front. Every set()
+                # is a request the driver may ignore — the resize below stays
+                # as the fallback — but when it complies the per-frame
+                # cv2.resize disappears and, more importantly for input feel,
+                # BUFFERSIZE=1 stops the backend queueing frames we would
+                # only ever read late.
+                try:
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                    cap.set(cv2.CAP_PROP_FPS, self.capture_fps)
+                except Exception:
+                    pass
         except Exception as e:
             self.last_error = f"Camera initialization failed: {e}"
             self.camera_available = False
@@ -615,6 +642,7 @@ class VisionPipeline(threading.Thread):
             print(f"{msg} Running simulated vision target.")
 
         sim_angle = 0.0
+        sim_template: np.ndarray | None = None
 
         try:
             while self.running:
@@ -625,7 +653,8 @@ class VisionPipeline(threading.Thread):
                             time.sleep(0.01)
                             continue
 
-                        frame = cv2.resize(frame, (self.width, self.height))
+                        if frame.shape[1] != self.width or frame.shape[0] != self.height:
+                            frame = cv2.resize(frame, (self.width, self.height))
                         frame = cv2.flip(frame, 1)   # mirror for natural interaction
 
                         payload = self._process_frame(frame)
@@ -637,21 +666,26 @@ class VisionPipeline(threading.Thread):
                     if self.camera_available and cap is not None:
                         cap.grab() # Keep buffer drained while disabled
                     # ── Simulated mode (no camera) ────────────────────────────────
-                    sim_angle += 0.05
+                    # 5 rad/s regardless of loop rate — the old fixed 0.05/tick
+                    # tied the orbit speed to how fast the loop happened to spin.
+                    sim_angle += 5.0 / self.capture_fps
                     target_x = self.width  / 2.0 + math.cos(sim_angle) * 200.0
                     target_y = self.height / 2.0 + math.sin(sim_angle) * 150.0
 
-                    dummy = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-                    cv2.putText(
-                        dummy,
-                        "Simulated Vision Mode (No Camera)",
-                        (20, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        (0, 255, 255),
-                        2,
-                    )
-                    payload = self._empty_payload(target_x, target_y, dummy)
+                    # The banner never changes; paint it once and hand each frame
+                    # out as a copy (consumers draw HUDs onto payload["frame"]).
+                    if sim_template is None:
+                        sim_template = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                        cv2.putText(
+                            sim_template,
+                            "Simulated Vision Mode (No Camera)",
+                            (20, 40),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            (0, 255, 255),
+                            2,
+                        )
+                    payload = self._empty_payload(target_x, target_y, sim_template.copy())
 
                 # Advance the stabilization clock from the capture loop, not from
                 # gesture extraction. Samples only arrive while a hand is in view,
@@ -680,7 +714,12 @@ class VisionPipeline(threading.Thread):
                     except queue.Empty:
                         pass
                 self.result_queue.put_nowait(payload)
-                time.sleep(0.01)
+                # Real-camera pacing comes from the blocking cap.read() itself;
+                # the old unconditional 10 ms sleep here added a fixed frame of
+                # latency at 60 fps for nothing. Only the camera-less path needs
+                # a governor, and it now runs at capture_fps instead of ~100 Hz.
+                if not self.camera_available or getattr(self, 'disable_camera', False):
+                    time.sleep(1.0 / self.capture_fps)
         finally:
             if cap is not None:
                 try:
