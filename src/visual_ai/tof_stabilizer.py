@@ -104,7 +104,8 @@ class ToFStabilizer:
     _TRACK_ALPHA_IN_GATE:  float = 0.02   # slow — follows thermal/positional drift
     _TRACK_ALPHA_OUT_GATE: float = 0.15   # fast — re-seats after real movement
 
-    def __init__(self, gate_k: float = 2.5, min_gate_m: float = 0.002) -> None:
+    def __init__(self, gate_k: float = 2.5, min_gate_m: float = 0.002,
+                 clock=None) -> None:
         """
         Parameters
         ----------
@@ -115,6 +116,19 @@ class ToFStabilizer:
             Absolute floor for the gate (metres). Guards against an
             unrealistically small gate when calibration happens to be very
             quiet. 2 mm by default.
+        clock : callable, optional
+            Returns the current time in seconds. ``None`` (the default) reads
+            ``time.time()`` at call time rather than capturing it, so the
+            module-level ``time`` swap the benchmarks use to fast-forward a
+            calibration keeps working.
+
+            The calibration window is defined in seconds, so a harness that
+            steps frames faster than real time measures a window covering far
+            more input than it appears to: a 1 s calibration driven at 500
+            simulated fps samples 500 frames of whatever the input is doing, and
+            if that input is moving, the "hold still" baseline is calibrated
+            against movement and the resulting gate is enormous. Injecting the
+            frame clock makes the window mean what it says.
         """
         self.state:             str   = self.STATE_INACTIVE
         self.z_baseline:        float = 0.0
@@ -125,9 +139,23 @@ class ToFStabilizer:
         self.gate_k:     float = max(0.0, float(gate_k))
         self.min_gate_m: float = max(0.0, float(min_gate_m))
 
+        self.clock = clock
+
         self._samples:    list[float] = []
         self._start_time: float = 0.0
         self._duration:   float = 3.0
+
+    def _now(self) -> float:
+        """
+        Current time in seconds.
+
+        Deliberately resolves ``time.time`` through the module on every call
+        rather than binding it in ``__init__``: the benches fast-forward a
+        calibration by replacing ``tof_stabilizer.time`` wholesale, and a
+        captured reference would silently ignore that and hang every timed
+        check in the suite.
+        """
+        return self.clock() if self.clock is not None else time.time()
 
     # ── Read-only properties ───────────────────────────────────────────────────
 
@@ -147,7 +175,7 @@ class ToFStabilizer:
             return 1.0
         if self.state == self.STATE_INACTIVE:
             return 0.0
-        elapsed = time.time() - self._start_time
+        elapsed = self._now() - self._start_time
         return min(1.0, elapsed / self._duration)
 
     @property
@@ -155,7 +183,7 @@ class ToFStabilizer:
         """Seconds remaining in current calibration window, or 0.0 otherwise."""
         if self.state != self.STATE_SAMPLING:
             return 0.0
-        return max(0.0, self._duration - (time.time() - self._start_time))
+        return max(0.0, self._duration - (self._now() - self._start_time))
 
     @property
     def sample_count(self) -> int:
@@ -195,7 +223,7 @@ class ToFStabilizer:
         """
         requested        = float(duration)
         self._samples    = []
-        self._start_time = time.time()
+        self._start_time = self._now()
         self._duration   = max(1.0, requested)
         self.z_baseline         = 0.0
         self.z_noise_amplitude  = 0.0
@@ -257,7 +285,7 @@ class ToFStabilizer:
         """
         if self.state != self.STATE_SAMPLING:
             return False
-        if (time.time() - self._start_time) < self._duration:
+        if (self._now() - self._start_time) < self._duration:
             return False
         self._finalise()
         return True

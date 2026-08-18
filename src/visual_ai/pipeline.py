@@ -15,9 +15,13 @@ Queue payload (dict)
   # Face
   "target_x"  : float,   # face centre X (px), or frame centre if no face
   "target_y"  : float,   # face centre Y (px), or frame centre if no face
+  "face_visible" : bool,
+  "face_box"  : (int,)*4,# x, y, w, h in px; (0,0,0,0) when no face. Box width is
+                         #   the RGB path's only distance proxy for the head.
+  "face_count": int,     # detections found; only the first drives target_x/y
   "frame"     : ndarray, # BGR camera frame (already flipped & resized)
 
-  # Hand
+  # Hand — these flat keys describe the PRIMARY hand (lowest occupied slot)
   "hand_visible"      : bool,
   "index_pos"         : (int, int),   # index fingertip, smoothed (px)
   "thumb_pos"         : (int, int),   # thumb tip, raw (px)
@@ -34,6 +38,28 @@ Queue payload (dict)
   "is_fist"           : bool,
   "is_open_palm"      : bool,
   "grip_openness"     : float,        # 0.0 curled fist … 1.0 fingers straight
+
+  # Motion (see _extract_gesture). px/s, differenced frame to frame.
+  "index_velocity"    : (float, float),  # from the SMOOTHED fingertip — use this
+  "index_velocity_raw": (float, float),  # from the raw landmark; the difference
+                                         #   against the above is the filter's lag
+  "index_speed"       : float,        # |index_velocity|
+  "index_accel"       : float,        # d|v|/dt, EMA'd (raw double-difference is
+                                      #   too noisy to hand to a consumer)
+
+  # Multi-hand
+  "hands"      : tuple[dict, ...],    # one gesture dict per tracked hand, slot
+                                      #   order, each with the keys above plus
+                                      #   "slot" / "handedness" / "handedness_score"
+  "hand_count" : int,
+  "hand_left"  : dict | None,         # first hand MediaPipe labelled "Left"
+  "hand_right" : dict | None,
+  "slot"       : int,                 # primary hand's slot
+  "handedness" : str,                 # "Left" | "Right" | "unknown"
+  "handedness_score" : float,
+
+  # Depth occupancy grid — ONLY when pipeline.emit_depth_grid is True
+  "depth_grid" : ndarray | None,      # (rows, cols) float32 metres, 0 = no return
 
   "smoothing_enabled" : bool,         # One-Euro landmark smoothing currently on?
   "z_delta"           : float,        # raw Z push magnitude (debug)
@@ -57,7 +83,22 @@ Queue payload (dict)
 }
 
 Every key above is present on EVERY payload, including frames with no hand and
-simulated-camera frames, so consumers can index directly.
+simulated-camera frames, so consumers can index directly. The one exception is
+"depth_grid", which is opt-in precisely because it is the only key whose size is
+not O(1) and every game drains a maxsize=1 queue.
+
+Hand slots
+----------
+MediaPipe does not guarantee a stable order for `multi_hand_landmarks` between
+frames. Hands are therefore assigned to persistent slots by nearest-neighbour
+against the previous frame's wrist position, and each slot owns its own One-Euro
+filters, sign debounce and jitter analyser. Keying that state off the raw list
+index instead makes two hands swap filter histories the moment the order flips.
+
+`handedness` is MediaPipe's own label. The frame is mirrored before detection
+(selfie view), which is the orientation MediaPipe's handedness model expects, so
+the label should match the player's real hand — but treat it as a hint and let
+the player rebind rather than hard-coding a hand to a role.
 """
 
 import math
@@ -76,6 +117,7 @@ from visual_ai.noise_filter import (
 from visual_ai.jitter_analyzer import JitterAnalyzer
 from visual_ai.tof_stabilizer import ToFStabilizer
 from visual_ai.gesture_mlp import GestureMLP, landmarks_to_features
+from visual_ai.gesture_math import get_landmark_velocity
 
 # ── Optional MediaPipe imports ────────────────────────────────────────────────
 HAS_MEDIAPIPE = False
@@ -208,6 +250,7 @@ class _GestureState:
         self.z_history: list[tuple[float, tuple[int, int]]] = []
         self.z_cooldown: int        = 0
         self.z_start_xy             = None   # type: tuple[int,int] | None
+        self.z_source: str          = "mp"   # unit of z_history: "mp" | "tof"
 
         # Frames since a hand was last seen (drives the reset below)
         self.lost_frames: int = 0
@@ -219,6 +262,18 @@ class _GestureState:
         self.sign: str = SIGN_UNKNOWN            # currently reported sign
         self.sign_candidate: str = SIGN_UNKNOWN  # sign awaiting confirmation
         self.sign_consec: int = 0                # frames the candidate has held
+
+        # Motion. Velocity is differenced from the *smoothed* fingertip so it is
+        # usable directly; `raw_*` differences the unfiltered landmark so a
+        # consumer can measure what the One-Euro filter actually costs in phase
+        # lag rather than taking the filter's word for it.
+        self.prev_time: float | None = None
+        self.prev_xy: tuple[float, float] | None = None
+        self.prev_raw_xy: tuple[float, float] | None = None
+        self.vel: tuple[float, float] = (0.0, 0.0)
+        self.raw_vel: tuple[float, float] = (0.0, 0.0)
+        self.speed: float = 0.0
+        self.accel: float = 0.0
 
     def reset(self):
         self.smoothed = False
@@ -233,11 +288,19 @@ class _GestureState:
         self.z_history.clear()
         self.z_cooldown = 0
         self.z_start_xy = None
+        self.z_source = "mp"
         self.lost_frames = 0
         self.was_3_pinching = False
         self.sign = SIGN_UNKNOWN
         self.sign_candidate = SIGN_UNKNOWN
         self.sign_consec = 0
+        self.prev_time = None
+        self.prev_xy = None
+        self.prev_raw_xy = None
+        self.vel = (0.0, 0.0)
+        self.raw_vel = (0.0, 0.0)
+        self.speed = 0.0
+        self.accel = 0.0
 
 
 # ── VisionPipeline ─────────────────────────────────────────────────────────────
@@ -257,6 +320,10 @@ class VisionPipeline(threading.Thread):
     smooth_alpha : float
         EMA smoothing factor for landmark positions (0 < α ≤ 1).
         Lower = smoother but laggier; 0.25 is a good default.
+    max_hands : int
+        How many hands MediaPipe tracks, and how many gesture slots the payload
+        carries. 1 is measurably cheaper per frame; 2 is the default because it
+        is what the detector was already configured with.
     """
 
     def __init__(
@@ -272,6 +339,7 @@ class VisionPipeline(threading.Thread):
         capture_fps: float = 30.0,
         enable_z_click: bool = False,
         gesture_mlp: GestureMLP | None = None,
+        max_hands: int = 2,
     ):
         super().__init__(daemon=True)
         self.result_queue  = result_queue
@@ -283,6 +351,7 @@ class VisionPipeline(threading.Thread):
         self.noise_filter  = PipelineNoiseFilter(noise_duration=noise_duration)
         self.tof_stabilizer = ToFStabilizer()
         self.running       = False
+        self._stop_requested = False   # latched by stop(); run() never re-arms past it
 
         # ── Landmark smoothing (One-Euro) ─────────────────────────────────────
         # `smooth_alpha` is reinterpreted as the *resting* smoothness: it maps to
@@ -313,7 +382,15 @@ class VisionPipeline(threading.Thread):
         self.tof_simulated: bool    = False
         self.tof_device_name: str   = "None"
         self.depth_map: np.ndarray | None = None
-        
+
+        # ── Depth occupancy grid (opt-in) ─────────────────────────────────────
+        # A whole-scene depth read, downsampled, for consumers that want the
+        # silhouette rather than a single fingertip sample. Off by default: it
+        # is the only payload key whose size is not O(1), and every existing
+        # game drains a maxsize=1 queue that would then carry it every frame.
+        self.emit_depth_grid: bool = False
+        self.depth_grid_size: tuple[int, int] = (32, 24)   # (cols, rows)
+
         self.disable_camera: bool   = False
 
         # ── MediaPipe: Face Detection ─────────────────────────────────────────
@@ -328,11 +405,12 @@ class VisionPipeline(threading.Thread):
 
         # ── MediaPipe: Hands ──────────────────────────────────────────────────
         self._mp_hands = None
+        self.max_hands = max(1, int(max_hands))
         if mp_hands_module is not None:
             try:
                 self._mp_hands = mp_hands_module.Hands(
                     static_image_mode=False,
-                    max_num_hands=2,
+                    max_num_hands=self.max_hands,
                     model_complexity=1,
                     min_detection_confidence=0.7,
                     min_tracking_confidence=0.65,
@@ -340,11 +418,23 @@ class VisionPipeline(threading.Thread):
             except Exception as e:
                 print(f"[VisionPipeline] Hands init warning: {e}")
 
-        # ── Jitter Analyzer ───────────────────────────────────────────────────
-        self.jitter_analyzer = JitterAnalyzer(window_size=30)
+        # ── Per-hand gesture state ────────────────────────────────────────────
+        # One slot per tracked hand. Slot 0 stays reachable as `self._gs` and
+        # `self.jitter_analyzer` because that is what every existing consumer
+        # (and test) reads; the extra slots are new. Hands are assigned to slots
+        # by nearest-neighbour against the previous frame rather than by
+        # MediaPipe's list order, which is not stable frame to frame — without
+        # that, two hands crossing would swap their One-Euro filter histories
+        # and both would snap.
+        self._gs_slots = [
+            _GestureState(make_filter=self._make_position_filter)
+            for _ in range(self.max_hands)
+        ]
+        self._jitter_slots = [JitterAnalyzer(window_size=30) for _ in range(self.max_hands)]
+        self._slot_anchor: list[tuple[float, float] | None] = [None] * self.max_hands
 
-        # ── Gesture state ─────────────────────────────────────────────────────
-        self._gs = _GestureState(make_filter=self._make_position_filter)
+        self._gs = self._gs_slots[0]
+        self.jitter_analyzer = self._jitter_slots[0]
 
         self.last_error: str | None = None
         self.camera_available: bool = False
@@ -467,8 +557,17 @@ class VisionPipeline(threading.Thread):
         self.tof_stabilizer.disable()
 
     # ── Thread entry ──────────────────────────────────────────────────────────
-    def run(self):
+    def start(self):
+        """Arm the loop flag *before* the thread exists. `run()` used to set
+        `running = True` as its first statement, so a `start(); stop()` pair
+        racing thread scheduling could have `run()` re-arm the flag after
+        `stop()` cleared it — a daemon loop holding the camera forever."""
         self.running = True
+        super().start()
+
+    def run(self):
+        if not self._stop_requested:
+            self.running = True   # direct run() callers never went through start()
         cap = None
         try:
             cap = cv2.VideoCapture(self.camera_index)
@@ -558,9 +657,17 @@ class VisionPipeline(threading.Thread):
                     pass
             self.running = False
 
-    def stop(self):
-        """Stop the background pipeline thread."""
+    def stop(self, join_timeout: float = 2.0):
+        """
+        Stop the background pipeline thread and wait for the camera handle to
+        be released. Without the join, a game restarting the pipeline on the
+        same camera index raced the old thread's `cap.release()` and silently
+        fell back to simulated mode.
+        """
+        self._stop_requested = True
         self.running = False
+        if self.is_alive() and threading.current_thread() is not self:
+            self.join(timeout=join_timeout)
 
     # ── Frame processing ──────────────────────────────────────────────────────
     def _process_frame(self, bgr_frame: np.ndarray) -> dict:
@@ -570,47 +677,221 @@ class VisionPipeline(threading.Thread):
         # ── Face detection ────────────────────────────────────────────────────
         target_x = self.width  / 2.0
         target_y = self.height / 2.0
+        face_visible = False
+        face_box = (0, 0, 0, 0)
+        face_count = 0
 
         if self._mp_face is not None:
             face_results = self._mp_face.process(rgb)
             if face_results.detections:
+                face_count = len(face_results.detections)
                 det  = face_results.detections[0]
                 bbox = det.location_data.relative_bounding_box
                 target_x = (bbox.xmin + bbox.width  / 2.0) * self.width
                 target_y = (bbox.ymin + bbox.height / 2.0) * self.height
+                # Box width is the only cheap proxy the RGB path has for how far
+                # away the head is, which is what a game needs to scale anything
+                # that should feel anchored to the player rather than the frame.
+                face_visible = True
+                face_box = (
+                    round(bbox.xmin * self.width),
+                    round(bbox.ymin * self.height),
+                    round(bbox.width * self.width),
+                    round(bbox.height * self.height),
+                )
 
         # ── Hand gesture detection ────────────────────────────────────────────
-        gesture = self._empty_gesture()
+        hands: list[dict] = []
 
         if self._mp_hands is not None:
             hand_results = self._mp_hands.process(rgb)
+            landmark_sets = hand_results.multi_hand_landmarks or []
+            handedness = getattr(hand_results, "multi_handedness", None) or []
 
-            if hand_results.multi_hand_landmarks:
-                self._gs.lost_frames = 0
-                gesture = self._extract_gesture(hand_results.multi_hand_landmarks[0].landmark)
-            else:
-                self._gs.lost_frames += 1
-                if self._gs.lost_frames > 12:
-                    self._gs.reset()
-                    self.jitter_analyzer.reset()
+            assignment = self._assign_slots(landmark_sets)
+
+            # One timestamp for the whole frame: both hands were captured in the
+            # same exposure, so giving slot 1 a later `now` than slot 0 would put
+            # a few hundred microseconds of made-up dt into its filter and its
+            # velocity difference.
+            frame_time = time.time()
+
+            for mp_index, slot in sorted(assignment.items(), key=lambda kv: kv[1]):
+                lm = landmark_sets[mp_index].landmark
+                entry = self._extract_gesture(lm, slot=slot, now=frame_time)
+                entry["slot"] = slot
+                label, score = "unknown", 0.0
+                if mp_index < len(handedness):
+                    try:
+                        cls = handedness[mp_index].classification[0]
+                        label, score = cls.label, float(cls.score)
+                    except (AttributeError, IndexError):
+                        pass
+                entry["handedness"] = label
+                entry["handedness_score"] = score
+                hands.append(entry)
+
+            occupied = set(assignment.values())
+            for slot in range(self.max_hands):
+                if slot in occupied:
+                    continue
+                gs = self._gs_slots[slot]
+                gs.lost_frames += 1
+                if gs.lost_frames > 12:
+                    gs.reset()
+                    self._jitter_slots[slot].reset()
+                    self._slot_anchor[slot] = None
+
+        # The flat gesture keys describe the lowest occupied slot. With one hand
+        # in view that is the same hand every frame, which is what every existing
+        # game assumes; the difference only shows with two, where slot order is
+        # stable and MediaPipe's list order is not.
+        gesture = hands[0] if hands else self._empty_gesture()
+
+        by_hand = {"Left": None, "Right": None}
+        for entry in hands:
+            if entry.get("handedness") in by_hand and by_hand[entry["handedness"]] is None:
+                by_hand[entry["handedness"]] = entry
 
         payload = {
             # Face
             "target_x": target_x,
             "target_y": target_y,
+            "face_visible": face_visible,
+            "face_box": face_box,
+            "face_count": face_count,
             "frame":    bgr_frame,
-            # Hand (merged in from gesture dict)
+            # Hand (merged in from the primary hand's gesture dict)
             **gesture,
+            # Every tracked hand, slot-ordered, plus handedness shortcuts.
+            "hands":      tuple(hands),
+            "hand_count": len(hands),
+            "hand_left":  by_hand["Left"],
+            "hand_right": by_hand["Right"],
         }
+
+        if self.emit_depth_grid:
+            payload["depth_grid"] = self._build_depth_grid(hands, face_box if face_visible else None)
+
         return payload
 
+    # ── Hand → slot assignment ────────────────────────────────────────────────
+    def _assign_slots(self, landmark_sets) -> dict[int, int]:
+        """
+        Map each detected hand (by MediaPipe list index) to a persistent slot.
+
+        MediaPipe does not promise a stable ordering for ``multi_hand_landmarks``
+        across frames, so keying per-hand filter state off that index makes two
+        hands trade One-Euro histories whenever the order flips — both outputs
+        snap on the same frame. Matching each hand to the slot whose last known
+        wrist position is nearest keeps a hand on its own filter.
+        """
+        if not landmark_sets:
+            return {}
+
+        wrists = [
+            (lm.landmark[0].x * self.width, lm.landmark[0].y * self.height)
+            for lm in landmark_sets
+        ]
+
+        # A hand can move a long way between frames; the radius only has to be
+        # tight enough to prefer the right slot when two candidates exist.
+        max_match = 0.5 * max(self.width, self.height)
+
+        pairs = sorted(
+            (
+                (_dist2d(wrists[i], self._slot_anchor[s]), i, s)
+                for i in range(len(wrists))
+                for s in range(self.max_hands)
+                if self._slot_anchor[s] is not None
+            ),
+            key=lambda t: t[0],
+        )
+
+        assignment: dict[int, int] = {}
+        used_slots: set[int] = set()
+        for distance, i, s in pairs:
+            if i in assignment or s in used_slots or distance > max_match:
+                continue
+            assignment[i] = s
+            used_slots.add(s)
+
+        for i in range(len(wrists)):
+            if i in assignment:
+                continue
+            free = next((s for s in range(self.max_hands) if s not in used_slots), None)
+            if free is None:
+                break                      # more hands than slots — drop the extras
+            assignment[i] = free
+            used_slots.add(free)
+
+        for i, s in assignment.items():
+            self._slot_anchor[s] = wrists[i]
+            self._gs_slots[s].lost_frames = 0
+        return assignment
+
+    # ── Depth occupancy grid ──────────────────────────────────────────────────
+    def _build_depth_grid(self, hands: list[dict], face_box) -> np.ndarray | None:
+        """
+        Whole-scene depth, downsampled to ``depth_grid_size``, in metres.
+        Zero means "no return" — the same convention the raw sensor uses.
+
+        With a real sensor this is a straight resize of ``depth_map``. Without
+        one it is *synthesised* from the tracked hands and face so consumers can
+        be developed and profiled against the real payload shape; the values are
+        plausible, not measured, and ``depth_source`` still says so.
+        """
+        cols, rows = self.depth_grid_size
+
+        if self.depth_map is not None and self.depth_map.size:
+            grid = cv2.resize(
+                self.depth_map.astype(np.float32), (cols, rows),
+                interpolation=cv2.INTER_NEAREST,
+            )
+            return grid / 1000.0
+
+        if not self.tof_simulated:
+            return None
+
+        grid = np.full((rows, cols), 2.0, dtype=np.float32)   # far wall at 2 m
+        ys, xs = np.mgrid[0:rows, 0:cols]
+
+        def blob(cx_px, cy_px, radius_px, depth_m):
+            cx = cx_px * cols / max(1, self.width)
+            cy = cy_px * rows / max(1, self.height)
+            r = max(1.0, radius_px * cols / max(1, self.width))
+            d2 = (xs - cx) ** 2 + (ys - cy) ** 2
+            mask = d2 <= r * r
+            np.minimum(grid, np.where(mask, depth_m, np.inf), out=grid)
+
+        if face_box and face_box[2] > 0:
+            blob(face_box[0] + face_box[2] / 2.0, face_box[1] + face_box[3] / 2.0,
+                 face_box[2] * 0.6, 0.9)
+        for entry in hands:
+            px, py = entry.get("pinch_pos", (0, 0))
+            blob(px, py, 70.0, max(0.15, float(entry.get("tof_z_m", 0.45))))
+
+        return grid
+
     # ── Gesture extraction ────────────────────────────────────────────────────
-    def _extract_gesture(self, lm) -> dict:
+    def _extract_gesture(self, lm, slot: int = 0, now: float | None = None) -> dict:
         """
         Given MediaPipe hand landmarks (already mirrored via frame flip),
         compute and return the full gesture dict.
+
+        ``slot`` selects which hand's filter / debounce / jitter state to use.
+        Slot 0 is the default and is the state every single-hand consumer has
+        always been driving.
+
+        ``now`` overrides the timestamp fed to the One-Euro filters and the
+        velocity difference. It exists because both are dt-dependent and
+        wall-clock dt is whatever the machine happened to do: a test that steps
+        landmarks in a tight loop sees a sub-100 us dt, which is below the guard
+        on the velocity difference, so the motion keys never move off zero and
+        the filter behaves nothing like it does at 30 fps.
         """
-        gs = self._gs
+        gs = self._gs_slots[slot]
+        jitter_analyzer = self._jitter_slots[slot]
         W, H = self.width, self.height
 
         # Raw pixel positions (frame is already flipped, so no extra mirror needed)
@@ -637,7 +918,7 @@ class VisionPipeline(threading.Thread):
         # with hand speed so fast motion stays lag-free. A fixed-alpha EMA
         # cannot do both, which is why tracking previously felt either shaky
         # or laggy depending on which way `smooth_alpha` was pushed.
-        now = time.time()
+        now = time.time() if now is None else float(now)
         gs.smooth_ix, gs.smooth_iy = gs.index_filter.filter((raw_ix, raw_iy), now)
         gs.smooth_px, gs.smooth_py = gs.centroid_filter.filter((c_x, c_y), now)
         gs.smoothed = True
@@ -650,6 +931,26 @@ class VisionPipeline(threading.Thread):
             # instead of snapping from a stale one.
             index_pos = (round(raw_ix), round(raw_iy))
             pinch_pos = (round(c_x), round(c_y))
+
+        # ── Fingertip motion ──────────────────────────────────────────────────
+        # Differenced from the smoothed fingertip, so a consumer gets a velocity
+        # it can use directly rather than one it has to filter again. `raw_vel`
+        # differences the unfiltered landmark alongside it: the gap between the
+        # two is the phase lag One-Euro is currently costing, which is the only
+        # honest way to tune `filter_beta` against a fast reversal.
+        dt = 0.0 if gs.prev_time is None else (now - gs.prev_time)
+        if dt > 1e-4:
+            gs.vel = get_landmark_velocity(gs.prev_xy, (gs.smooth_ix, gs.smooth_iy), dt)
+            gs.raw_vel = get_landmark_velocity(gs.prev_raw_xy, (raw_ix, raw_iy), dt)
+            speed = math.hypot(*gs.vel)
+            # Acceleration is differenced from an already-differenced signal, so
+            # it is noisy by construction — EMA it rather than handing a
+            # consumer a value that swings by 10x between adjacent frames.
+            gs.accel = _ema((speed - gs.speed) / dt, gs.accel, alpha=0.3)
+            gs.speed = speed
+        gs.prev_time = now
+        gs.prev_xy = (gs.smooth_ix, gs.smooth_iy)
+        gs.prev_raw_xy = (raw_ix, raw_iy)
 
         # ── 1. 2-Finger Pinch (DISABLED — superseded by the 3-finger lock below)
         # The thumb/index distance test fired constantly at frame edges where
@@ -719,7 +1020,7 @@ class VisionPipeline(threading.Thread):
             raw_sign, _ = self.gesture_mlp.predict(landmarks_to_features(lm))
         else:
             raw_sign = classify_hand_sign(fingers_extended)
-        hand_sign = self._debounce_sign(raw_sign)
+        hand_sign = self._debounce_sign(raw_sign, gs)
 
         # Continuous grip measure, deliberately NOT debounced and not
         # thresholded into booleans. `hand_sign` needs _SIGN_DEBOUNCE frames of
@@ -756,19 +1057,24 @@ class VisionPipeline(threading.Thread):
         # threshold is in real metres and can be floored by the stabilizer's
         # measured noise gate. Falls back to MediaPipe's relative Z otherwise.
         if self.enable_z_click:
+            # OR'd with the 3-finger-pinch edge above, never assigned over it —
+            # enabling the depth push must not silently disable the pinch click.
             if tof_active:
-                click_fired, z_delta, xy_drift = self._detect_z_click(
+                z_click, z_delta, xy_drift = self._detect_z_click(
                     tof_z_m, index_pos,
                     threshold=max(_Z_CLICK_THRESHOLD_M, self.tof_stabilizer.noise_gate * 2.0),
+                    gs=gs, source="tof",
                 )
             else:
                 # MediaPipe Z decreases toward the camera, same sense as depth.
-                click_fired, z_delta, xy_drift = self._detect_z_click(
+                z_click, z_delta, xy_drift = self._detect_z_click(
                     z_val, index_pos, threshold=_Z_CLICK_THRESHOLD,
+                    gs=gs, source="mp",
                 )
+            click_fired = click_fired or z_click
 
         # ── 6. Jitter Calculation ──────────────────────────────────────────────
-        jitter_stats = self.jitter_analyzer.update((raw_ix, raw_iy), (gs.smooth_ix, gs.smooth_iy))
+        jitter_stats = jitter_analyzer.update((raw_ix, raw_iy), (gs.smooth_ix, gs.smooth_iy))
 
         return {
             "hand_visible":        True,
@@ -789,6 +1095,11 @@ class VisionPipeline(threading.Thread):
             "is_fist":             hand_sign == SIGN_FIST,
             "is_open_palm":        hand_sign == SIGN_OPEN_PALM,
             "grip_openness":       grip_openness,
+            # Motion
+            "index_velocity":      gs.vel,
+            "index_velocity_raw":  gs.raw_vel,
+            "index_speed":         gs.speed,
+            "index_accel":         gs.accel,
             "smoothing_enabled":   self.smoothing_enabled,
             "z_delta":             z_delta,
             "xy_drift":            xy_drift,
@@ -806,14 +1117,14 @@ class VisionPipeline(threading.Thread):
         }
 
     # ── Hand sign debounce ────────────────────────────────────────────────────
-    def _debounce_sign(self, raw_sign: str) -> str:
+    def _debounce_sign(self, raw_sign: str, gs: "_GestureState | None" = None) -> str:
         """
         Only report a sign once it has held for `_SIGN_DEBOUNCE` frames.
 
         Returns the currently confirmed sign, which may be the previous one
         while a new candidate is still being confirmed.
         """
-        gs = self._gs
+        gs = self._gs if gs is None else gs
 
         if raw_sign == gs.sign:
             gs.sign_candidate = raw_sign
@@ -879,7 +1190,9 @@ class VisionPipeline(threading.Thread):
 
     # ── Z-push click algorithm ────────────────────────────────────────────────
     def _detect_z_click(self, z_now: float, xy_now: tuple,
-                        threshold: float | None = None) -> tuple:
+                        threshold: float | None = None,
+                        gs: "_GestureState | None" = None,
+                        source: str = "mp") -> tuple:
         """
         Returns (fired: bool, delta_z: float, drift: float).
 
@@ -909,8 +1222,21 @@ class VisionPipeline(threading.Thread):
         * A fired click cleared the whole history, forcing _Z_HISTORY_LEN frames
           of refill *after* the cooldown before another push could register.
         """
-        gs = self._gs
+        # `gs` selects which hand's window to use — defaulting to slot 0 kept
+        # two tracked hands sharing one Z history, so hand A's depth samples
+        # could fire hand B's click.
+        gs = self._gs if gs is None else gs
         thr = _Z_CLICK_THRESHOLD if threshold is None else float(threshold)
+
+        # ToF metres (~0.45) and MediaPipe relative Z (~±0.05) are incompatible
+        # units. If the depth source flipped since the last sample (sensor
+        # drop-out, `tof_simulated` toggled mid-session), a window max in one
+        # unit against z_now in the other reads as a huge push and fires a
+        # phantom click — so the window restarts on every source change.
+        if source != gs.z_source:
+            gs.z_history.clear()
+            gs.z_cooldown = 0
+            gs.z_source = source
 
         # History entries are (z, xy) so the baseline keeps its own anchor.
         gs.z_history.append((float(z_now), xy_now))
@@ -1039,6 +1365,16 @@ class VisionPipeline(threading.Thread):
             "is_fist":           False,
             "is_open_palm":      False,
             "grip_openness":     0.0,
+            # Motion
+            "index_velocity":     (0.0, 0.0),
+            "index_velocity_raw": (0.0, 0.0),
+            "index_speed":        0.0,
+            "index_accel":        0.0,
+            # Slot / handedness. Present here too so a consumer can read
+            # payload["handedness"] on a no-hand frame without guarding.
+            "slot":              0,
+            "handedness":        "unknown",
+            "handedness_score":  0.0,
             "smoothing_enabled": self.smoothing_enabled,
             "z_delta":           0.0,
             "xy_drift":          0.0,
@@ -1058,9 +1394,19 @@ class VisionPipeline(threading.Thread):
         }
 
     def _empty_payload(self, tx: float, ty: float, frame: np.ndarray) -> dict:
-        return {
+        payload = {
             "target_x": tx,
             "target_y": ty,
+            "face_visible": False,
+            "face_box":     (0, 0, 0, 0),
+            "face_count":   0,
             "frame":    frame,
             **self._empty_gesture(),
+            "hands":      (),
+            "hand_count": 0,
+            "hand_left":  None,
+            "hand_right": None,
         }
+        if self.emit_depth_grid:
+            payload["depth_grid"] = self._build_depth_grid([], None)
+        return payload

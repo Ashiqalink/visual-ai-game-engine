@@ -1,3 +1,4 @@
+import math
 import numpy as np
 from dataclasses import dataclass, field
 import random
@@ -58,6 +59,24 @@ class Debris:
     material: Material = field(default_factory=Material)
 
 
+def _coerce_material(material: Optional[Material]) -> Material:
+    """
+    Resolve a ``material=`` argument the way the C++ binding does.
+
+    Both engines default to a fresh Material when none is given and reject
+    anything that is not one: the binding cannot convert a stray dict, and a
+    fallback that accepted it silently would only fail later, in the renderer,
+    on whichever machine had no compiled core.
+    """
+    if material is None:
+        return Material()
+    if not isinstance(material, Material):
+        raise TypeError(
+            f"material must be a visual_ai.Material, got {type(material).__name__}"
+        )
+    return material
+
+
 class PythonFallbackEngine:
     """
     Pure Python fallback physics and scene engine used when C++ engine_core extension is not compiled.
@@ -96,11 +115,28 @@ class PythonFallbackEngine:
         height: float = 1.0,
         depth: float = 1.0,
         material: Optional[Material] = None,
+        w: Optional[float] = None,
+        h: Optional[float] = None,
+        d: Optional[float] = None,
     ) -> Entity:
-        """Add a general-purpose Entity to the game world."""
+        """
+        Add a general-purpose Entity to the game world.
+
+        The size can be given as ``width``/``height``/``depth`` (this class's
+        historical spelling) or as ``w``/``h``/``d`` — the names the C++
+        engine's binding uses. Accepting both keeps a keyword call working
+        regardless of which engine loaded; the short names win if both are
+        passed.
+        """
+        if w is not None:
+            width = w
+        if h is not None:
+            height = h
+        if d is not None:
+            depth = d
         ent_id = self._next_entity_id
         self._next_entity_id += 1
-        mat = material if material is not None else Material()
+        mat = _coerce_material(material)
         entity = Entity(
             id=ent_id,
             name=name,
@@ -141,7 +177,7 @@ class PythonFallbackEngine:
         """Add a 3D Element entity to the engine scene."""
         ent_id = self._next_entity_id
         self._next_entity_id += 1
-        mat = material if material is not None else Material()
+        mat = _coerce_material(material)
         entity = Entity(
             id=ent_id,
             name=name,
@@ -176,7 +212,7 @@ class PythonFallbackEngine:
         self.entities.clear()
 
     def add_block(self, x: float, y: float, w: float, h: float, health: float, material: Optional[Material] = None):
-        mat = material if material is not None else Material()
+        mat = _coerce_material(material)
         self.blocks.append(Block(x, y, w, h, health, health, True, mat))
 
     def get_blocks(self) -> List[Block]:
@@ -224,9 +260,14 @@ class PythonFallbackEngine:
             entity.x += entity.vx * dt
             entity.y += entity.vy * dt
             entity.z += entity.vz * dt
-            entity.rx = (entity.rx + entity.vrx * dt) % 360.0
-            entity.ry = (entity.ry + entity.vry * dt) % 360.0
-            entity.rz = (entity.rz + entity.vrz * dt) % 360.0
+            # math.fmod, not %: the C++ engine wraps with std::fmod, which
+            # keeps the sign (-100° stays -100°, not 260°). Python's % is
+            # always non-negative, so the two engines reported different
+            # values for the same negative spin and threshold comparisons on
+            # rx/ry/rz diverged depending on which engine loaded.
+            entity.rx = math.fmod(entity.rx + entity.vrx * dt, 360.0)
+            entity.ry = math.fmod(entity.ry + entity.vry * dt, 360.0)
+            entity.rz = math.fmod(entity.rz + entity.vrz * dt, 360.0)
 
         # Block collisions (legacy support)
         for block in self.blocks:
