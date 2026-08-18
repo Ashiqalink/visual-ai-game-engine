@@ -123,6 +123,20 @@ class TestToFStabilizer(unittest.TestCase):
         self.assertEqual(s.z_baseline, 0.0)
         self.assertEqual(s.z_noise_amplitude, 0.0)
 
+    def test_cancel_restores_previous_calibration(self):
+        """Cancelling a recalibration restores the previous completed calibration."""
+        s = _calibrate(ToFStabilizer(), depth=0.45, shake=0.003)
+        baseline = s.z_baseline
+        amp = s.z_noise_amplitude
+        self.assertEqual(s.state, ToFStabilizer.STATE_ACTIVE)
+
+        s.begin(2.0)
+        self.assertEqual(s.state, ToFStabilizer.STATE_SAMPLING)
+        s.cancel()
+        self.assertEqual(s.state, ToFStabilizer.STATE_ACTIVE)
+        self.assertEqual(s.z_baseline, baseline)
+        self.assertEqual(s.z_noise_amplitude, amp)
+
     def test_short_duration_is_clamped(self):
         s = ToFStabilizer()
         s.begin(0.1)
