@@ -62,6 +62,7 @@ Queue payload keys added
 """
 
 import math
+import threading
 import time
 
 
@@ -145,6 +146,15 @@ class ToFStabilizer:
         self._start_time: float = 0.0
         self._duration:   float = 3.0
 
+        # Lock protecting state transitions and sample collection so a tick/feed
+        # running on the capture thread doesn't race against a begin/cancel/disable
+        # fired from the UI/game thread. RLock because feed() → tick() → _finalise() nests.
+        self._lock = threading.RLock()
+
+        # Snapshot of the last completed calibration, so cancelling a
+        # recalibration restores it instead of leaving stabilization off.
+        self._prev_calibration: tuple[float, float] | None = None
+
     def _now(self) -> float:
         """
         Current time in seconds.
@@ -221,15 +231,18 @@ class ToFStabilizer:
             How many seconds to sample. 3.0 or 5.0 seconds recommended.
             Clamped to a minimum of 1.0 second.
         """
-        requested        = float(duration)
-        self._samples    = []
-        self._start_time = self._now()
-        self._duration   = max(1.0, requested)
-        self.z_baseline         = 0.0
-        self.z_noise_amplitude  = 0.0
-        self.z_offset           = 0.0
-        self.last_error         = None
-        self.state       = self.STATE_SAMPLING
+        requested = float(duration)
+        with self._lock:
+            if self.state == self.STATE_ACTIVE:
+                self._prev_calibration = (self.z_baseline, self.z_noise_amplitude)
+            self._samples    = []
+            self._start_time = self._now()
+            self._duration   = max(1.0, requested)
+            self.z_baseline         = 0.0
+            self.z_noise_amplitude  = 0.0
+            self.z_offset           = 0.0
+            self.last_error         = None
+            self.state       = self.STATE_SAMPLING
 
         note = ""
         if requested < 1.0:
@@ -257,15 +270,16 @@ class ToFStabilizer:
             True exactly once: the frame on which calibration completes.
             False every other frame.
         """
-        if self.state != self.STATE_SAMPLING:
-            return False
+        with self._lock:
+            if self.state != self.STATE_SAMPLING:
+                return False
 
-        # Discard zero / negative / NaN readings — an inactive or blind ToF
-        # sensor reports 0.0, and those must not become calibration data.
-        if math.isfinite(z_value) and z_value > 0.0:
-            self._samples.append(float(z_value))
+            # Discard zero / negative / NaN readings — an inactive or blind ToF
+            # sensor reports 0.0, and those must not become calibration data.
+            if math.isfinite(z_value) and z_value > 0.0:
+                self._samples.append(float(z_value))
 
-        return self.tick()
+            return self.tick()
 
     def tick(self) -> bool:
         """
@@ -283,12 +297,13 @@ class ToFStabilizer:
             True exactly once: the frame on which calibration finishes
             (successfully or not). False otherwise.
         """
-        if self.state != self.STATE_SAMPLING:
-            return False
-        if (self._now() - self._start_time) < self._duration:
-            return False
-        self._finalise()
-        return True
+        with self._lock:
+            if self.state != self.STATE_SAMPLING:
+                return False
+            if (self._now() - self._start_time) < self._duration:
+                return False
+            self._finalise()
+            return True
 
     def correct(self, z_value: float) -> float:
         """
@@ -308,54 +323,66 @@ class ToFStabilizer:
             Corrected depth reading in metres (clamped >= MIN_DEPTH_M).
             Absolute depth is preserved; only the vibration band is removed.
         """
-        if self.state != self.STATE_ACTIVE:
-            self.z_offset = 0.0
-            return z_value
+        with self._lock:
+            if self.state != self.STATE_ACTIVE:
+                self.z_offset = 0.0
+                return z_value
 
-        if not math.isfinite(z_value) or z_value <= 0.0:
-            self.z_offset = 0.0
-            return z_value
+            if not math.isfinite(z_value) or z_value <= 0.0:
+                self.z_offset = 0.0
+                return z_value
 
-        delta = z_value - self.z_baseline
-        gate  = self.noise_gate
+            delta = z_value - self.z_baseline
+            gate  = self.noise_gate
 
-        if abs(delta) <= gate:
-            # Vibration band: hold the reported depth steady at the baseline and
-            # let the baseline creep toward the reading so slow, genuine drift
-            # (thermal, posture) is still tracked.
-            self.z_baseline += self._TRACK_ALPHA_IN_GATE * delta
-            corrected = self.z_baseline
-        else:
-            # Real movement: subtract the gate width so the output is continuous
-            # across the gate edge, then re-seat the baseline toward the new
-            # resting depth so future vibration is measured around it.
-            excess = delta - math.copysign(gate, delta)
-            corrected = self.z_baseline + excess
-            self.z_baseline += self._TRACK_ALPHA_OUT_GATE * excess
+            if abs(delta) <= gate:
+                # Vibration band: hold the reported depth steady at the baseline
+                # and let the baseline creep toward the reading so slow, genuine
+                # drift (thermal, posture) is still tracked.
+                self.z_baseline += self._TRACK_ALPHA_IN_GATE * delta
+                corrected = self.z_baseline
+            else:
+                # Real movement: subtract the gate width so the output is
+                # continuous across the gate edge, then re-seat the baseline
+                # toward the new resting depth so future vibration is measured
+                # around it.
+                excess = delta - math.copysign(gate, delta)
+                corrected = self.z_baseline + excess
+                self.z_baseline += self._TRACK_ALPHA_OUT_GATE * excess
 
-        corrected = max(self.MIN_DEPTH_M, corrected)
-        self.z_offset = z_value - corrected
-        return corrected
+            corrected = max(self.MIN_DEPTH_M, corrected)
+            self.z_offset = z_value - corrected
+            return corrected
 
     def cancel(self) -> None:
         """
         Abort a calibration that is in progress.
 
-        Backs out to ``inactive``; a previously completed calibration is not
-        restored. Safe to call in any state.
+        Restores the previous completed calibration when there was one
+        (the contract the module docstring has always promised), otherwise
+        backs out to ``inactive``. Safe to call in any state.
         """
-        if self.state == self.STATE_SAMPLING:
+        with self._lock:
+            if self.state != self.STATE_SAMPLING:
+                return
             self._samples = []
-            self.state    = self.STATE_INACTIVE
-            print("[ToFStabilizer] Calibration cancelled.")
+            if self._prev_calibration is not None:
+                self.z_baseline, self.z_noise_amplitude = self._prev_calibration
+                self.state = self.STATE_ACTIVE
+                print("[ToFStabilizer] Calibration cancelled — previous calibration restored.")
+            else:
+                self.state = self.STATE_INACTIVE
+                print("[ToFStabilizer] Calibration cancelled.")
 
     def disable(self) -> None:
         """Turn off stabilization and clear all calibration data."""
-        self.state             = self.STATE_INACTIVE
-        self.z_baseline        = 0.0
-        self.z_noise_amplitude = 0.0
-        self.z_offset          = 0.0
-        self._samples          = []
+        with self._lock:
+            self.state             = self.STATE_INACTIVE
+            self.z_baseline        = 0.0
+            self.z_noise_amplitude = 0.0
+            self.z_offset          = 0.0
+            self._samples          = []
+            self._prev_calibration = None
         print("[ToFStabilizer] Stabilization disabled.")
 
     # ── Internal ───────────────────────────────────────────────────────────────

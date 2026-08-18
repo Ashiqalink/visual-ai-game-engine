@@ -17,6 +17,7 @@ from visual_ai.noise_filter import (
 from visual_ai.render3d import Transform3D, Camera3D, Mesh3D, Renderer3D
 from visual_ai.tof_stabilizer import ToFStabilizer
 from visual_ai.jitter_analyzer import JitterAnalyzer
+from visual_ai.segment import PersonSegmenter
 from visual_ai.math_utils import (
     Vector2,
     Vector3,
@@ -71,10 +72,18 @@ from visual_ai.imaging import (
     rgb_to_bgr,
     chroma_key,
     remove_background,
+    normalize_lighting,
+    clipped_fraction,
     clean_sprite,
     autocrop,
     pad_to,
     REMBG_AVAILABLE,
+)
+from visual_ai.matting import (
+    PortraitMatter,
+    portrait_matte,
+    cut_out_person,
+    MODNET_AVAILABLE,
 )
 
 # Re-exported third-party surface.
@@ -111,6 +120,7 @@ __all__ = [
     "ema_alpha_to_cutoff",
     "ToFStabilizer",
     "JitterAnalyzer",
+    "PersonSegmenter",
     "Material",
     "ShaderType",
     "Entity",
@@ -165,10 +175,17 @@ __all__ = [
     "rgb_to_bgr",
     "chroma_key",
     "remove_background",
+    "normalize_lighting",
+    "clipped_fraction",
     "clean_sprite",
     "autocrop",
     "pad_to",
     "REMBG_AVAILABLE",
+    # Portrait matting (MODNet)
+    "PortraitMatter",
+    "portrait_matte",
+    "cut_out_person",
+    "MODNET_AVAILABLE",
     # Re-exported dependencies
     "np",
 ]

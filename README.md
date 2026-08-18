@@ -102,4 +102,13 @@ finally:
 
 ## 📜 License
 
-Distributed under the MIT License. See `LICENSE` for details.
+**Proprietary — all rights reserved. Not open source.**
+
+There is deliberately no LICENSE file. Copyright is automatic and exclusive
+without one, so no permission to copy, redistribute, publish, or create
+derivative works is granted to anyone. Adding any of the licenses GitHub
+offers would *weaken* this — every one of them grants redistribution rights,
+which is what makes them open source.
+
+If you received a copy, you received it directly, and the terms are whatever
+was agreed with you. Do not pass it on.

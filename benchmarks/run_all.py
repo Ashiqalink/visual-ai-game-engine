@@ -45,8 +45,8 @@ def _json_safe(obj):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run the ToF stabilizer and landmark filter test benches.")
-    parser.add_argument("--only", choices=["stabilizer", "filters"],
-                        help="run just one bench (default: both)")
+    parser.add_argument("--only", choices=["stabilizer", "filters", "resolution"],
+                        help="run just one bench (default: all)")
     parser.add_argument("--html", nargs="?", const=str(DEFAULT_HTML), metavar="PATH",
                         help="write an HTML report (default benchmarks/bench_report.html)")
     parser.add_argument("--json", metavar="PATH", help="write results as JSON")
@@ -65,6 +65,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.only in (None, "filters"):
         import bench_filters
         benches.append(bench_filters)
+    if args.only == "resolution" or (
+        args.only is None and (BENCH_DIR / "fixtures" / "hand_motion.mp4").exists()
+    ):
+        import bench_resolution
+        benches.append(bench_resolution)
 
     print(header("Visual AI — stabilizer & filter test bench",
                  "synthetic streams with known ground truth · seeded, so runs are comparable"))

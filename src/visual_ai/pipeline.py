@@ -61,6 +61,9 @@ Queue payload (dict)
   # Depth occupancy grid — ONLY when pipeline.emit_depth_grid is True
   "depth_grid" : ndarray | None,      # (rows, cols) float32 metres, 0 = no return
 
+  # Person segmentation mask — ONLY when pipeline.emit_person_mask is True
+  "person_mask" : ndarray | None,     # (H, W) uint8, 255 = person, 0 = background
+
   "smoothing_enabled" : bool,         # One-Euro landmark smoothing currently on?
   "z_delta"           : float,        # raw Z push magnitude (debug)
   "xy_drift"          : float,        # lateral drift during a Z push (px)
@@ -83,9 +86,9 @@ Queue payload (dict)
 }
 
 Every key above is present on EVERY payload, including frames with no hand and
-simulated-camera frames, so consumers can index directly. The one exception is
-"depth_grid", which is opt-in precisely because it is the only key whose size is
-not O(1) and every game drains a maxsize=1 queue.
+simulated-camera frames, so consumers can index directly. The exceptions are
+"depth_grid" and "person_mask", which are opt-in precisely because they are the
+only keys whose size is not O(1) and every game drains a maxsize=1 queue.
 
 Hand slots
 ----------
@@ -324,6 +327,15 @@ class VisionPipeline(threading.Thread):
         How many hands MediaPipe tracks, and how many gesture slots the payload
         carries. 1 is measurably cheaper per frame; 2 is the default because it
         is what the detector was already configured with.
+    detection_stride : int
+        Run MediaPipe Hands + FaceDetection every Nth frame instead of every
+        frame; the frames in between hold the last detection's landmarks
+        (One-Euro smoothing still runs every frame, so held positions don't
+        look frozen at rest). 1 (default) detects every frame — unchanged
+        behaviour. benchmarks/bench_resolution.py measured stride=2 against a
+        recorded clip at ~50% less MediaPipe time for ~22px of fingertip rmse
+        and negligible added lag; stride=3 saves more but starts costing real
+        accuracy. Tune per game, not here.
     """
 
     def __init__(
@@ -340,6 +352,7 @@ class VisionPipeline(threading.Thread):
         enable_z_click: bool = False,
         gesture_mlp: GestureMLP | None = None,
         max_hands: int = 2,
+        detection_stride: int = 1,
     ):
         super().__init__(daemon=True)
         self.result_queue  = result_queue
@@ -391,7 +404,26 @@ class VisionPipeline(threading.Thread):
         self.emit_depth_grid: bool = False
         self.depth_grid_size: tuple[int, int] = (32, 24)   # (cols, rows)
 
+        # ── Person segmentation mask (opt-in) ─────────────────────────────────
+        # Same reasoning as emit_depth_grid: off by default, since the mask is
+        # O(frame) and every existing game drains a maxsize=1 queue that would
+        # otherwise carry it every frame whether a consumer wants it or not.
+        # The model is built lazily on first use — see _get_person_mask — so
+        # turning this on is the only thing that pays its download/init cost.
+        self.emit_person_mask: bool = False
+        self._person_segmenter = None
+
         self.disable_camera: bool   = False
+
+        # ── Detection frame-skip (opt-in) ─────────────────────────────────────
+        # Held frames reuse the last MediaPipe detection rather than an
+        # interpolated one: a live pipeline has no future detection to
+        # interpolate towards, only past ones.
+        self.detection_stride: int = max(1, int(detection_stride))
+        self._detection_frame_count: int = 0
+        self._cached_face_detections = None
+        self._cached_landmark_sets: list = []
+        self._cached_handedness: list = []
 
         # ── MediaPipe: Face Detection ─────────────────────────────────────────
         self._mp_face = None
@@ -674,6 +706,9 @@ class VisionPipeline(threading.Thread):
         """Run face + hand detection on one BGR frame. Returns full payload."""
         rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
 
+        run_detection = (self._detection_frame_count % self.detection_stride == 0)
+        self._detection_frame_count += 1
+
         # ── Face detection ────────────────────────────────────────────────────
         target_x = self.width  / 2.0
         target_y = self.height / 2.0
@@ -682,10 +717,12 @@ class VisionPipeline(threading.Thread):
         face_count = 0
 
         if self._mp_face is not None:
-            face_results = self._mp_face.process(rgb)
-            if face_results.detections:
-                face_count = len(face_results.detections)
-                det  = face_results.detections[0]
+            if run_detection:
+                self._cached_face_detections = self._mp_face.process(rgb).detections
+            detections = self._cached_face_detections
+            if detections:
+                face_count = len(detections)
+                det  = detections[0]
                 bbox = det.location_data.relative_bounding_box
                 target_x = (bbox.xmin + bbox.width  / 2.0) * self.width
                 target_y = (bbox.ymin + bbox.height / 2.0) * self.height
@@ -704,9 +741,12 @@ class VisionPipeline(threading.Thread):
         hands: list[dict] = []
 
         if self._mp_hands is not None:
-            hand_results = self._mp_hands.process(rgb)
-            landmark_sets = hand_results.multi_hand_landmarks or []
-            handedness = getattr(hand_results, "multi_handedness", None) or []
+            if run_detection:
+                hand_results = self._mp_hands.process(rgb)
+                self._cached_landmark_sets = hand_results.multi_hand_landmarks or []
+                self._cached_handedness = getattr(hand_results, "multi_handedness", None) or []
+            landmark_sets = self._cached_landmark_sets
+            handedness = self._cached_handedness
 
             assignment = self._assign_slots(landmark_sets)
 
@@ -773,6 +813,9 @@ class VisionPipeline(threading.Thread):
         if self.emit_depth_grid:
             payload["depth_grid"] = self._build_depth_grid(hands, face_box if face_visible else None)
 
+        if self.emit_person_mask:
+            payload["person_mask"] = self._get_person_mask(bgr_frame)
+
         return payload
 
     # ── Hand → slot assignment ────────────────────────────────────────────────
@@ -829,6 +872,34 @@ class VisionPipeline(threading.Thread):
             self._slot_anchor[s] = wrists[i]
             self._gs_slots[s].lost_frames = 0
         return assignment
+
+    # ── Person segmentation mask ──────────────────────────────────────────────
+    def _get_person_mask(self, bgr_frame: np.ndarray) -> np.ndarray | None:
+        """
+        uint8 mask, same (height, width) as ``bgr_frame``, 255 = person.
+
+        Builds :class:`~visual_ai.segment.PersonSegmenter` on first call —
+        which downloads its model weights on first use — rather than in
+        ``__init__``, so enabling ``emit_person_mask`` is the only thing that
+        pays that cost. A failure here (no network on first use, a missing
+        model file) disables the flag rather than raising every frame, the
+        same way a missing MediaPipe module leaves ``self._mp_face`` as None
+        instead of crashing construction.
+        """
+        if self._person_segmenter is None:
+            try:
+                from visual_ai.segment import PersonSegmenter
+                self._person_segmenter = PersonSegmenter()
+            except Exception as e:
+                print(f"[VisionPipeline] PersonSegmenter init warning: {e}")
+                self.emit_person_mask = False
+                return None
+
+        try:
+            return self._person_segmenter.segment(bgr_frame)
+        except Exception as e:
+            print(f"[VisionPipeline] PersonSegmenter frame error: {e}")
+            return None
 
     # ── Depth occupancy grid ──────────────────────────────────────────────────
     def _build_depth_grid(self, hands: list[dict], face_box) -> np.ndarray | None:
@@ -1409,4 +1480,6 @@ class VisionPipeline(threading.Thread):
         }
         if self.emit_depth_grid:
             payload["depth_grid"] = self._build_depth_grid([], None)
+        if self.emit_person_mask:
+            payload["person_mask"] = self._get_person_mask(frame)
         return payload

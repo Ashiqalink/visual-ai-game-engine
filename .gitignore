@@ -34,6 +34,12 @@ Thumbs.db
 SKILLS.md
 .agents/
 
+# Agent scratch state. .claude/worktrees/ holds checkouts of this same repo, so
+# without this a `git add -A` commits a second copy of the whole source tree —
+# the duplicate-package shadowing that pytest.ini's `pythonpath = src` exists to
+# prevent, except versioned.
+.claude/
+
 # OpenCV temporary/large files
 *.onnx
 *.pb

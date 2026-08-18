@@ -42,6 +42,8 @@ __all__ = [
     "rgb_to_bgr",
     "chroma_key",
     "remove_background",
+    "normalize_lighting",
+    "clipped_fraction",
     "clean_sprite",
     "autocrop",
     "pad_to",
@@ -297,6 +299,124 @@ def remove_background(image: np.ndarray, model: str = "isnet-general-use") -> np
             '    pip install "rembg[cpu]"'
         ) from exc
     return to_rgba(np.asarray(cut))
+
+
+# ── Lighting ──────────────────────────────────────────────────────────────────
+
+def clipped_fraction(image: np.ndarray, threshold: int = 250,
+                     mask: np.ndarray | None = None) -> float:
+    """
+    Fraction of pixels blown out to (near-)white in every channel.
+
+    Worth measuring before trying to fix exposure, because this part is the
+    part no correction can help: a pixel that reached 255 in all three
+    channels recorded no detail to recover. A high number here means the fix
+    belongs at the camera — less gain, or less light behind the subject — not
+    in post.
+
+    ``mask`` restricts the count to part of the image, so a cutout can be
+    asked about its subject rather than the window behind it.
+    """
+    rgb = to_rgba(image)[..., :3]
+    blown = rgb.min(axis=2) >= threshold
+    if mask is None:
+        return float(blown.mean())
+    counted = np.asarray(mask) > 127
+    if not counted.any():
+        return 0.0
+    return float(blown[counted].mean())
+
+
+def normalize_lighting(image: np.ndarray, strength: float = 1.0,
+                       white_balance: bool = True, clip_limit: float = 1.5,
+                       highlight_knee: float = 0.7,
+                       mask: np.ndarray | None = None) -> np.ndarray:
+    """
+    Even out harsh or blown-out lighting. Alpha is carried through untouched.
+
+    Three passes, each fixing a different half of what "too much white" turns
+    out to mean:
+
+    * **Grey-world white balance** removes the colour cast — a webcam pushing
+      gain on an under-lit room usually pushes it unevenly, and the result
+      reads as washed out before it reads as tinted. Statistics are taken from
+      unclipped pixels only, since a blown region says nothing about the cast
+      and would drag the correction toward doing nothing.
+    * **A soft-knee highlight rolloff** compresses everything above
+      ``highlight_knee`` toward white instead of letting it pile up *at*
+      white. This is what puts shading back into a bright forehead or a lit
+      shoulder, where the values are high but not yet clipped.
+    * **CLAHE on L in LAB** restores local contrast, so a face lit from one
+      side stops flattening out on the bright side. Applying it to lightness
+      alone, rather than per channel, is what keeps it from inventing colour.
+
+    ``strength`` blends the result back toward the input, so a game can dial
+    this to taste. ``clip_limit`` bounds CLAHE's contrast gain: the default is
+    deliberately below the usual 2.0, because a webcam subject in a dim room
+    is noisy, and contrast gain applied to noise is just visible grain. Raise
+    it if the input is clean.
+
+    ``mask`` — uint8, same height and width — confines both the measurement
+    and the correction to part of the image. Pass a cutout's own alpha channel
+    to correct a matted subject: a blown window *behind* someone is not
+    evidence about how the subject is lit, and letting it into the statistics
+    is what makes a correction fix the background and miss the face.
+    """
+    cv2 = _cv2()
+    rgba = to_rgba(image)
+    rgb = rgba[..., :3].astype(np.float32)
+
+    if mask is not None:
+        mask = np.asarray(mask)
+        if mask.shape[:2] != rgba.shape[:2]:
+            raise ValueError(
+                f"mask shape {mask.shape[:2]} does not match image {rgba.shape[:2]}")
+        weight = np.clip(mask.astype(np.float32) / 255.0, 0.0, 1.0)
+    else:
+        weight = None
+
+    if white_balance:
+        unclipped = rgb.max(axis=2) < 250
+        if weight is not None:
+            unclipped &= weight > 0.5
+        if unclipped.any():
+            means = rgb[unclipped].mean(axis=0)
+            if means.min() > 1.0:
+                # Clamped because grey-world assumes an averagely-coloured
+                # scene, and a person in a red shirt against a white wall is
+                # not that; unclamped it would tint the whole frame cyan.
+                gains = np.clip(means.mean() / means, 0.8, 1.25)
+                rgb = np.clip(rgb * gains, 0, 255)
+
+    if highlight_knee < 1.0:
+        knee = float(np.clip(highlight_knee, 0.0, 0.999)) * 255.0
+        head = rgb - knee
+        span = 255.0 - knee
+        # A quadratic ease-out over the top end, scaled to land short of 255.
+        # Two things fall out of that: nothing below the knee moves at all,
+        # and pure white lands near 241 instead of staying pure white — which
+        # is the point, since a flat white patch reads as a hole in a sprite.
+        # The curve expands differences just above the knee and compresses
+        # them at the very top, where a real blown region has none left.
+        rolled = knee + span * (1.0 - (1.0 - np.clip(head, 0, span) / span) ** 2) * 0.82
+        rgb = np.where(rgb > knee, rolled, rgb)
+
+    corrected = np.clip(rgb, 0, 255).astype(np.uint8)
+    if clip_limit > 0:
+        lab = cv2.cvtColor(corrected, cv2.COLOR_RGB2LAB)
+        clahe = cv2.createCLAHE(clipLimit=float(clip_limit), tileGridSize=(8, 8))
+        lab[..., 0] = clahe.apply(lab[..., 0])
+        corrected = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+
+    blend = float(np.clip(strength, 0.0, 1.0))
+    if weight is not None:
+        blend = weight[..., None] * blend
+
+    out = rgba.copy()
+    out[..., :3] = np.clip(
+        rgba[..., :3].astype(np.float32) * (1.0 - blend)
+        + corrected.astype(np.float32) * blend, 0, 255).astype(np.uint8)
+    return out
 
 
 # ── Geometry ──────────────────────────────────────────────────────────────────
