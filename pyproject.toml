@@ -8,14 +8,19 @@ version = "0.3.0"
 description = "High-performance Computer Vision AI tracking and physics library for game developers"
 readme = "README.md"
 requires-python = ">=3.8"
-license = { text = "MIT" }
+license = { text = "Proprietary" }
 authors = [
-    { name = "Visual AI Game Engine Developers" }
+    { name = "Ashiqalink" }
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: C++",
-    "License :: OSI Approved :: MIT License",
+    # Proprietary, and deliberately not an OSI classifier. "Private :: Do Not
+    # Upload" is PyPI's kill switch: the index rejects any upload carrying an
+    # unrecognised Private :: classifier, so an accidental `twine upload` of a
+    # closed-source package fails at the server instead of publishing it.
+    "License :: Other/Proprietary License",
+    "Private :: Do Not Upload",
     "Operating System :: OS Independent",
     "Topic :: Games/Entertainment",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
