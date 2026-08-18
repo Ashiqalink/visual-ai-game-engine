@@ -75,6 +75,7 @@ from visual_ai.noise_filter import (
 )
 from visual_ai.jitter_analyzer import JitterAnalyzer
 from visual_ai.tof_stabilizer import ToFStabilizer
+from visual_ai.gesture_mlp import GestureMLP, landmarks_to_features
 
 # ── Optional MediaPipe imports ────────────────────────────────────────────────
 HAS_MEDIAPIPE = False
@@ -270,6 +271,7 @@ class VisionPipeline(threading.Thread):
         filter_beta: float = 0.006,
         capture_fps: float = 30.0,
         enable_z_click: bool = False,
+        gesture_mlp: GestureMLP | None = None,
     ):
         super().__init__(daemon=True)
         self.result_queue  = result_queue
@@ -294,6 +296,12 @@ class VisionPipeline(threading.Thread):
 
         # Depth-push click is opt-in; see `_detect_z_click`.
         self.enable_z_click = bool(enable_z_click)
+
+        # Hand-sign classification is `classify_hand_sign()`'s fixed geometric
+        # lookup table by default. Passing a trained `GestureMLP` here swaps
+        # `hand_sign` over to it instead — opt-in, so payload behavior for
+        # existing consumers is unchanged unless a caller supplies one.
+        self.gesture_mlp: GestureMLP | None = gesture_mlp
 
         # One-Euro landmark smoothing can be bypassed at runtime so raw
         # MediaPipe positions reach the consumer. This is separate from the ToF
@@ -707,7 +715,11 @@ class VisionPipeline(threading.Thread):
 
         # Debounced so a half-closed hand mid-transition cannot flap the sign
         # back and forth and fire a game action on every other frame.
-        hand_sign = self._debounce_sign(classify_hand_sign(fingers_extended))
+        if self.gesture_mlp is not None:
+            raw_sign, _ = self.gesture_mlp.predict(landmarks_to_features(lm))
+        else:
+            raw_sign = classify_hand_sign(fingers_extended)
+        hand_sign = self._debounce_sign(raw_sign)
 
         # Continuous grip measure, deliberately NOT debounced and not
         # thresholded into booleans. `hand_sign` needs _SIGN_DEBOUNCE frames of
