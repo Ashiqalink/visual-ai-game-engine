@@ -73,6 +73,10 @@ Queue payload (dict)
   # 3-finger pinch
   "is_3_finger_pinching" : bool,
 
+  # Capture conditions (see low_light.py)
+  "scene_luma"           : float,     # mean luma 0-255 before any boost
+  "low_light_gain"       : float,     # gain applied; 1.0 = frame untouched
+
   # Depth (see tof_stabilizer.py)
   "tof_active"           : bool,
   "tof_z_m"              : float,     # stabilized depth (m)
@@ -120,6 +124,7 @@ from visual_ai.noise_filter import (
     ema_alpha_to_cutoff,
 )
 from visual_ai.jitter_analyzer import JitterAnalyzer
+from visual_ai.low_light import LowLightBoost
 from visual_ai.tof_stabilizer import ToFStabilizer
 from visual_ai.gesture_mlp import GestureMLP, landmarks_to_features
 from visual_ai.gesture_math import get_landmark_velocity
@@ -343,6 +348,11 @@ class VisionPipeline(threading.Thread):
         MediaPipe Hands model tier: 1 (default) is the full landmark model,
         0 is the lite model — noticeably cheaper per frame at a small cost in
         fingertip accuracy. The speed knob to reach for on low-end machines.
+    low_light_boost : bool
+        Lift underexposed frames before detection (default True). The boost is
+        adaptive and one-sided: a well-lit frame solves to a gain of 1.0 and is
+        passed through untouched, so leaving this on costs one subsampled mean
+        per frame. See low_light.py.
     detect_face : bool
         Run the FaceDetection graph. True (default) is the long-standing
         behaviour. False skips a whole second inference — 3.1 ms/frame, 15% of
@@ -371,6 +381,7 @@ class VisionPipeline(threading.Thread):
         detection_stride: int = 1,
         model_complexity: int = 1,
         detect_face: bool = True,
+        low_light_boost: bool = True,
     ):
         super().__init__(daemon=True)
         self.result_queue  = result_queue
@@ -381,6 +392,14 @@ class VisionPipeline(threading.Thread):
         self.movement_magnification = movement_magnification
         self.noise_filter  = PipelineNoiseFilter(noise_duration=noise_duration)
         self.tof_stabilizer = ToFStabilizer()
+
+        # Underexposure gate. MediaPipe stops returning a hand well before a
+        # room looks dark to a person, and a dropout is indistinguishable
+        # downstream from a hand that left the frame -- so the fix belongs
+        # here, ahead of detection, rather than in each game.
+        self.low_light_boost = LowLightBoost() if low_light_boost else None
+        self.scene_luma: float = 0.0
+        self.low_light_gain: float = 1.0
         self.running       = False
         self._stop_requested = False   # latched by stop(); run() never re-arms past it
 
@@ -675,6 +694,16 @@ class VisionPipeline(threading.Thread):
                             frame = cv2.resize(frame, (self.width, self.height))
                         frame = cv2.flip(frame, 1)   # mirror for natural interaction
 
+                        # Boost before detection, and hand the boosted frame on
+                        # to consumers as well: a player in a dim room needs to
+                        # see what the tracker is seeing, and a preview that
+                        # stays dark while detection improves is a preview that
+                        # lies about why tracking works.
+                        if self.low_light_boost is not None:
+                            frame = self.low_light_boost.apply(frame)
+                            self.scene_luma = self.low_light_boost.luma
+                            self.low_light_gain = self.low_light_boost.gain
+
                         payload = self._process_frame(frame)
                     except Exception as frame_err:
                         self.last_error = f"Frame read/process error: {frame_err}"
@@ -871,6 +900,8 @@ class VisionPipeline(threading.Thread):
             "face_box": face_box,
             "face_count": face_count,
             "frame":    bgr_frame,
+            "scene_luma":     self.scene_luma,
+            "low_light_gain": self.low_light_gain,
             # Hand (merged in from the primary hand's gesture dict)
             **gesture,
             # Every tracked hand, slot-ordered, plus handedness shortcuts.
@@ -1542,6 +1573,8 @@ class VisionPipeline(threading.Thread):
             "face_box":     (0, 0, 0, 0),
             "face_count":   0,
             "frame":    frame,
+            "scene_luma":     self.scene_luma,
+            "low_light_gain": self.low_light_gain,
             **self._empty_gesture(),
             "hands":      (),
             "hand_count": 0,
