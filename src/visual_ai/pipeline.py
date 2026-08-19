@@ -343,6 +343,15 @@ class VisionPipeline(threading.Thread):
         MediaPipe Hands model tier: 1 (default) is the full landmark model,
         0 is the lite model — noticeably cheaper per frame at a small cost in
         fingertip accuracy. The speed knob to reach for on low-end machines.
+    detect_face : bool
+        Run the FaceDetection graph. True (default) is the long-standing
+        behaviour. False skips a whole second inference — 3.1 ms/frame, 15% of
+        per-frame cost at 1280x720 — for games that never read a face key. The
+        payload schema does not change either way: with it off, ``target_x`` /
+        ``target_y`` hold frame centre, ``face_visible`` is False, ``face_box``
+        is zeros and ``face_count`` is 0, exactly as when no face is in view. A
+        consumer that reads those keys will not raise, it will simply never see
+        a face — so turn it off only for games you know do not use them.
     """
 
     def __init__(
@@ -361,6 +370,7 @@ class VisionPipeline(threading.Thread):
         max_hands: int = 2,
         detection_stride: int = 1,
         model_complexity: int = 1,
+        detect_face: bool = True,
     ):
         super().__init__(daemon=True)
         self.result_queue  = result_queue
@@ -434,8 +444,16 @@ class VisionPipeline(threading.Thread):
         self._cached_handedness: list = []
 
         # ── MediaPipe: Face Detection ─────────────────────────────────────────
+        # A whole second inference graph, measured at 3.1 ms/frame (15% of
+        # _process_frame) at 1280x720. It is opt-*out* rather than opt-in
+        # because the face keys have been on every payload since the pipeline
+        # was written and duckhunt, avatarcatch and labkit read them — flipping
+        # the default would break those silently, one KeyError-free frame of
+        # wrong behaviour at a time. Hand-only games pass detect_face=False and
+        # stop paying for a detection nothing consumes.
+        self.detect_face = bool(detect_face)
         self._mp_face = None
-        if HAS_MEDIAPIPE and mp_face_detection_module is not None:
+        if self.detect_face and HAS_MEDIAPIPE and mp_face_detection_module is not None:
             try:
                 self._mp_face = mp_face_detection_module.FaceDetection(
                     model_selection=0, min_detection_confidence=0.5
