@@ -82,6 +82,8 @@ from visual_ai.imaging import (
     background_uniformity,
     composite_over,
     blit_sprite,
+    blit_ellipse_alpha,
+    invalidate_sprite_cache,
 )
 from visual_ai.matting import (
     PortraitMatter,
@@ -199,6 +201,8 @@ __all__ = [
     "background_uniformity",
     "composite_over",
     "blit_sprite",
+    "blit_ellipse_alpha",
+    "invalidate_sprite_cache",
     "REMBG_AVAILABLE",
     # Portrait matting (MODNet)
     "PortraitMatter",
