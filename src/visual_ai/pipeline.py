@@ -82,6 +82,8 @@ Queue payload (dict)
   "tof_z_m"              : float,     # stabilized depth (m)
   "tof_z_raw"            : float,     # depth before stabilization (m)
   "depth_source"         : str,
+  "depth_device"         : str,      # backend name, "" when there is none
+  "depth_fps"            : float,    # sensor frames/s, 0.0 without a sensor
   "stabilizer_state"     : str,       # "inactive" | "sampling" | "active"
   "stabilizer_progress"  : float,
   "stabilizer_noise_amp" : float,     # measured vibration std-dev (m)
@@ -124,6 +126,7 @@ from visual_ai.noise_filter import (
     ema_alpha_to_cutoff,
 )
 from visual_ai.jitter_analyzer import JitterAnalyzer
+from visual_ai.depth_source import DepthStream, open_depth_source
 from visual_ai.low_light import LowLightBoost
 from visual_ai.tof_stabilizer import ToFStabilizer
 from visual_ai.gesture_mlp import GestureMLP, landmarks_to_features
@@ -171,6 +174,11 @@ _Z_HISTORY_LEN       = 10      # rolling window size (frames)
 _Z_MIN_HISTORY       = 4       # frames needed before the window can fire
 _Z_CLICK_THRESHOLD   = 0.012   # minimum MediaPipe-Z delta to count as a push
 _Z_CLICK_THRESHOLD_M = 0.030   # minimum ToF depth delta to count as a push (m)
+
+# A depth frame older than this is dropped rather than reused. Sensors stall,
+# and a held frame is indistinguishable downstream from a live one -- which is
+# how a game ends up acting on where your hand was a second ago.
+DEPTH_STALE_S = 0.5
 _Z_CLICK_XY_MAX_PX   = 30      # max lateral drift allowed during push (px)
 _Z_COOLDOWN_FRAMES   = 25      # frames before another click can fire (~0.8 s at 30 fps)
 
@@ -348,6 +356,12 @@ class VisionPipeline(threading.Thread):
         MediaPipe Hands model tier: 1 (default) is the full landmark model,
         0 is the lite model — noticeably cheaper per frame at a small cost in
         fingertip accuracy. The speed knob to reach for on low-end machines.
+    depth_source : str, optional
+        Where metric depth comes from. None (default) keeps the historic
+        behaviour: no sensor, and `tof_z_m` is a MediaPipe estimate unless
+        `tof_simulated` is set. "auto" opens the first ToF backend that
+        responds; "synthetic" and "replay:PATH" need no hardware. See
+        depth_source.py for the full spec list.
     low_light_boost : bool
         Lift underexposed frames before detection (default True). The boost is
         adaptive and one-sided: a well-lit frame solves to a gain of 1.0 and is
@@ -382,6 +396,7 @@ class VisionPipeline(threading.Thread):
         model_complexity: int = 1,
         detect_face: bool = True,
         low_light_boost: bool = True,
+        depth_source: str | None = None,
     ):
         super().__init__(daemon=True)
         self.result_queue  = result_queue
@@ -397,6 +412,13 @@ class VisionPipeline(threading.Thread):
         # room looks dark to a person, and a dropout is indistinguishable
         # downstream from a hand that left the frame -- so the fix belongs
         # here, ahead of detection, rather than in each game.
+        # Depth producer. Opened in start() rather than here, so constructing
+        # a pipeline never grabs a capture device -- the same reason the camera
+        # is not opened until the thread runs.
+        self.depth_source_spec = depth_source
+        self.depth_stream: DepthStream | None = None
+        self.depth_fps: float = 0.0
+
         self.low_light_boost = LowLightBoost() if low_light_boost else None
         self.scene_luma: float = 0.0
         self.low_light_gain: float = 1.0
@@ -678,11 +700,46 @@ class VisionPipeline(threading.Thread):
                 msg += f" Details: {self.last_error}"
             print(f"{msg} Running simulated vision target.")
 
+        # ── Depth sensor ──────────────────────────────────────────────────
+        # Runs on its own thread: depth and colour have independent frame
+        # rates, and a blocking sensor read inside this loop would pace the
+        # whole RGB path off the slower of the two.
+        if self.depth_source_spec:
+            source = open_depth_source(self.depth_source_spec, quiet=False)
+            if source is None:
+                print(f"[VisionPipeline] No depth source for "
+                      f"{self.depth_source_spec!r} — staying on the RGB path.")
+            else:
+                self.depth_stream = DepthStream(source)
+                self.depth_stream.start()
+                # `tof_active` means measured depth from a real device. A
+                # synthetic or replayed source is depth, but it is not a
+                # sensor, and labelling it as one is the misreporting this
+                # whole path was built to end.
+                self.tof_active = not source.synthetic
+                self.tof_simulated = self.tof_simulated or source.synthetic
+                self.tof_device_name = source.name
+                print(f"[VisionPipeline] Depth source: {source.name}"
+                      f"{' (synthetic)' if source.synthetic else ''}")
+
         sim_angle = 0.0
         sim_template: np.ndarray | None = None
 
         try:
             while self.running:
+                # Newest depth frame, if a sensor is attached. Pulled before
+                # the camera branch so depth reaches consumers in simulated
+                # mode too -- a depth rig with no webcam is a valid setup, and
+                # it is the one a headless test uses. A frame older than
+                # DEPTH_STALE_S is dropped rather than reused: a held map is
+                # indistinguishable downstream from a live one.
+                if self.depth_stream is not None:
+                    self.depth_map = (
+                        self.depth_stream.latest()
+                        if self.depth_stream.age_s() < DEPTH_STALE_S
+                        else None)
+                    self.depth_fps = self.depth_stream.source.fps
+
                 if self.camera_available and cap is not None and not getattr(self, 'disable_camera', False):
                     try:
                         ret, frame = cap.read()
@@ -784,6 +841,11 @@ class VisionPipeline(threading.Thread):
         """
         self._stop_requested = True
         self.running = False
+        if self.depth_stream is not None:
+            self.depth_stream.stop()
+            self.depth_stream = None
+            self.depth_map = None
+            self.tof_active = False
         if self.is_alive() and threading.current_thread() is not self:
             self.join(timeout=join_timeout)
 
@@ -902,6 +964,8 @@ class VisionPipeline(threading.Thread):
             "frame":    bgr_frame,
             "scene_luma":     self.scene_luma,
             "low_light_gain": self.low_light_gain,
+            "depth_device":   self.tof_device_name if self.depth_stream else "",
+            "depth_fps":      self.depth_fps,
             # Hand (merged in from the primary hand's gesture dict)
             **gesture,
             # Every tracked hand, slot-ordered, plus handedness shortcuts.
@@ -1575,6 +1639,8 @@ class VisionPipeline(threading.Thread):
             "frame":    frame,
             "scene_luma":     self.scene_luma,
             "low_light_gain": self.low_light_gain,
+            "depth_device":   self.tof_device_name if self.depth_stream else "",
+            "depth_fps":      self.depth_fps,
             **self._empty_gesture(),
             "hands":      (),
             "hand_count": 0,
