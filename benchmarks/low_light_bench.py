@@ -30,23 +30,30 @@ import cv2
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "src"))
 
+from visual_ai.capture import default_backend                 # noqa: E402
 from visual_ai.low_light import LowLightBoost, measure_luma   # noqa: E402
 
 DIM_FACTORS = (1.0, 0.5, 0.35, 0.22, 0.14, 0.09)
 
 
-def capture(n_frames, camera_index=0, width=800, height=600):
-    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+def capture(n_frames, camera_index=0, width=800, height=600, countdown=4):
+    cap = cv2.VideoCapture(camera_index, default_backend())
     if not cap.isOpened():
         print(f"camera {camera_index} would not open")
         return None
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     frames = []
-    print(f"capturing {n_frames} frames -- hold one hand up in view")
-    # Give auto-exposure a moment before the frames that count.
-    for _ in range(15):
-        cap.read()
+    # Count down out loud. The capture lasts a couple of seconds, and a
+    # reference pass with no hand in it invalidates every row below it --
+    # which is worth more warning than a single printed line.
+    print("hold ONE HAND up in view of the camera")
+    for remaining in range(countdown, 0, -1):
+        print(f"  capturing in {remaining}...")
+        deadline = time.perf_counter() + 1.0
+        while time.perf_counter() < deadline:
+            cap.read()          # keeps auto-exposure settling meanwhile
+    print(f"capturing {n_frames} frames -- hold still")
     while len(frames) < n_frames:
         ok, frame = cap.read()
         if not ok:
@@ -122,13 +129,15 @@ def main(argv=None):
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--save")
     ap.add_argument("--load")
+    ap.add_argument("--countdown", type=int, default=4,
+                    help="seconds of warning before capture starts")
     args = ap.parse_args(argv)
 
     if args.load:
         frames = np.load(args.load)["frames"]
         print(f"loaded {len(frames)} frames from {args.load}")
     else:
-        frames = capture(args.frames, args.camera)
+        frames = capture(args.frames, args.camera, countdown=args.countdown)
         if frames is None:
             return 2
         if args.save:

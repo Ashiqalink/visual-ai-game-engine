@@ -15,8 +15,19 @@ from visual_ai.noise_filter import (
     ema_alpha_to_cutoff,
 )
 from visual_ai.render3d import Transform3D, Camera3D, Mesh3D, Renderer3D
-from visual_ai.tof_stabilizer import ToFStabilizer
+from visual_ai.tof_stabilizer import DepthStabilizer, ToFStabilizer
 from visual_ai.jitter_analyzer import JitterAnalyzer
+from visual_ai.low_light import LowLightBoost, measure_luma
+from visual_ai.capture import default_backend, open_camera
+from visual_ai.depth_source import (
+    DepthRecorder,
+    DepthSource,
+    DepthStream,
+    ReplayDepthSource,
+    SyntheticDepthSource,
+    open_depth_source,
+    probe_depth_sources,
+)
 from visual_ai.segment import PersonSegmenter
 from visual_ai.math_utils import (
     Vector2,
@@ -134,6 +145,18 @@ __all__ = [
     "GenericStreamFilter",
     "OneEuroFilter",
     "ema_alpha_to_cutoff",
+    "DepthStabilizer",
+    "LowLightBoost",
+    "measure_luma",
+    "default_backend",
+    "open_camera",
+    "DepthSource",
+    "DepthStream",
+    "DepthRecorder",
+    "SyntheticDepthSource",
+    "ReplayDepthSource",
+    "open_depth_source",
+    "probe_depth_sources",
     "ToFStabilizer",
     "JitterAnalyzer",
     "PersonSegmenter",

@@ -279,7 +279,7 @@ class TestPipelineConsumesDepth:
         pipe.tof_simulated = True
         active, z_m, label = pipe.sample_tof_depth(32, 24, lm_z=0.0)
         assert active is True
-        assert label == "ToF Hardware (Simulated)"
+        assert label == "Simulated depth (no sensor)"
         assert z_m == pytest.approx(0.45, abs=0.01)
 
     def test_sampling_reads_the_depth_map_when_there_is_one(self):
@@ -289,7 +289,7 @@ class TestPipelineConsumesDepth:
         active, z_m, label = pipe.sample_tof_depth(32, 24)
         assert active is True
         assert z_m == pytest.approx(1.8, abs=0.001)
-        assert label == "ToF IR Hardware"
+        assert label.startswith("Depth sensor")
 
     def test_depth_map_resolution_need_not_match_the_frame(self):
         # The sensor is 320x240 while the frame is 64x48: the fingertip pixel

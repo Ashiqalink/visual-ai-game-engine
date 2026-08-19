@@ -66,7 +66,7 @@ import threading
 import time
 
 
-class ToFStabilizer:
+class DepthStabilizer:
     """
     Calibrates and corrects ambient ToF Z wobble caused by physical device
     vibration (fan, wind, lid shake).
@@ -248,7 +248,7 @@ class ToFStabilizer:
         if requested < 1.0:
             note = f" (requested {requested:.2f}s, clamped to minimum)"
         print(
-            f"[ToFStabilizer] Calibration started — "
+            f"[DepthStabilizer] Calibration started — "
             f"hold still for {self._duration:.0f}s{note}"
         )
 
@@ -369,10 +369,10 @@ class ToFStabilizer:
             if self._prev_calibration is not None:
                 self.z_baseline, self.z_noise_amplitude = self._prev_calibration
                 self.state = self.STATE_ACTIVE
-                print("[ToFStabilizer] Calibration cancelled — previous calibration restored.")
+                print("[DepthStabilizer] Calibration cancelled — previous calibration restored.")
             else:
                 self.state = self.STATE_INACTIVE
-                print("[ToFStabilizer] Calibration cancelled.")
+                print("[DepthStabilizer] Calibration cancelled.")
 
     def disable(self) -> None:
         """Turn off stabilization and clear all calibration data."""
@@ -383,7 +383,7 @@ class ToFStabilizer:
             self.z_offset          = 0.0
             self._samples          = []
             self._prev_calibration = None
-        print("[ToFStabilizer] Stabilization disabled.")
+        print("[DepthStabilizer] Stabilization disabled.")
 
     # ── Internal ───────────────────────────────────────────────────────────────
 
@@ -403,7 +403,7 @@ class ToFStabilizer:
             self.z_noise_amplitude = 0.0
             self._samples          = []
             print(
-                f"[ToFStabilizer] Calibration FAILED — {self.last_error}. "
+                f"[DepthStabilizer] Calibration FAILED — {self.last_error}. "
                 f"Is the ToF sensor enabled and a hand in view? "
                 f"Stabilization left off."
             )
@@ -420,7 +420,7 @@ class ToFStabilizer:
         self._samples          = []
 
         print(
-            f"[ToFStabilizer] Calibration complete — "
+            f"[DepthStabilizer] Calibration complete — "
             f"samples={n}, "
             f"baseline={self.z_baseline:.4f} m, "
             f"noise_amp={self.z_noise_amplitude * 1000:.1f} mm, "
@@ -429,10 +429,16 @@ class ToFStabilizer:
 
     def __repr__(self) -> str:
         return (
-            f"ToFStabilizer("
+            f"DepthStabilizer("
             f"state={self.state!r}, "
             f"baseline={self.z_baseline:.4f} m, "
             f"noise={self.z_noise_amplitude:.4f} m, "
             f"gate={self.noise_gate:.4f} m, "
             f"progress={self.progress:.0%})"
         )
+
+
+# "ToF" named a time-of-flight sensor this engine did not have; the class gates
+# depth noise whatever produced the depth. The old name stays exported because
+# games and tests import it directly.
+ToFStabilizer = DepthStabilizer

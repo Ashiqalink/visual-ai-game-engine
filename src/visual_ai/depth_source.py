@@ -51,6 +51,8 @@ import threading
 
 import numpy as np
 
+from visual_ai.capture import default_backend
+
 try:
     import cv2
 except ImportError:                                   # pragma: no cover
@@ -410,7 +412,9 @@ class UVCDepthSource(DepthSource):
     def _open(self):
         if cv2 is None:
             raise DepthSourceError("OpenCV is not available")
-        cap = cv2.VideoCapture(self.index, cv2.CAP_DSHOW)
+        # Platform backend, not DirectShow: this has to open on macOS and
+        # Linux too, where CAP_DSHOW names an API that does not exist.
+        cap = cv2.VideoCapture(self.index, default_backend())
         if not cap.isOpened():
             cap.release()
             raise DepthSourceError(f"video index {self.index} would not open")

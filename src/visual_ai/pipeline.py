@@ -78,10 +78,16 @@ Queue payload (dict)
   "low_light_gain"       : float,     # gain applied; 1.0 = frame untouched
 
   # Depth (see tof_stabilizer.py)
-  "tof_active"           : bool,
-  "tof_z_m"              : float,     # stabilized depth (m)
-  "tof_z_raw"            : float,     # depth before stabilization (m)
+  "depth_active"         : bool,      # a real depth sensor is supplying this
+  "depth_m"              : float,     # stabilized depth (m)
+  "depth_m_raw"          : float,     # depth before stabilization (m)
   "depth_source"         : str,
+  # Deprecated aliases of the four above, kept so existing games keep running.
+  # New code should read the depth_* names: "ToF" named a sensor this engine
+  # did not have, and the keys carried an RGB estimate under that name.
+  "tof_active"           : bool,
+  "tof_z_m"              : float,
+  "tof_z_raw"            : float,
   "depth_device"         : str,      # backend name, "" when there is none
   "depth_fps"            : float,    # sensor frames/s, 0.0 without a sensor
   "stabilizer_state"     : str,       # "inactive" | "sampling" | "active"
@@ -359,7 +365,7 @@ class VisionPipeline(threading.Thread):
     depth_source : str, optional
         Where metric depth comes from. None (default) keeps the historic
         behaviour: no sensor, and `tof_z_m` is a MediaPipe estimate unless
-        `tof_simulated` is set. "auto" opens the first ToF backend that
+        `depth_simulated` is set. "auto" opens the first depth backend that
         responds; "synthetic" and "replay:PATH" need no hardware. See
         depth_source.py for the full spec list.
     low_light_boost : bool
@@ -450,9 +456,12 @@ class VisionPipeline(threading.Thread):
         self.smoothing_enabled: bool = True
 
         # ── ToF (Time-of-Flight) Depth Sensor State ───────────────────────────
-        self.tof_active: bool       = False
-        self.tof_simulated: bool    = False
-        self.tof_device_name: str   = "None"
+        # Canonical names. `depth_active` means a real sensor is feeding
+        # depth_map; `depth_simulated` means the numbers are synthesised and
+        # must never be presented as measurements.
+        self.depth_active: bool       = False
+        self.depth_simulated: bool    = False
+        self.depth_device_name: str   = "None"
         self.depth_map: np.ndarray | None = None
 
         # ── Depth occupancy grid (opt-in) ─────────────────────────────────────
@@ -643,10 +652,10 @@ class VisionPipeline(threading.Thread):
         duration : float
             Calibration window in seconds. 3.0 or 5.0 recommended.
         """
-        if not (self.tof_active or self.tof_simulated):
+        if not (self.depth_active or self.depth_simulated):
             print(
                 "[VisionPipeline] begin_stabilization() called with no ToF source — "
-                "attach a sensor, or set pipeline.tof_simulated = True with a real "
+                "attach a sensor, or set pipeline.depth_simulated = True with a real "
                 "camera and a tracked hand (samples are only fed from gesture "
                 "extraction). Calibration will collect no samples and abort."
             )
@@ -712,13 +721,13 @@ class VisionPipeline(threading.Thread):
             else:
                 self.depth_stream = DepthStream(source)
                 self.depth_stream.start()
-                # `tof_active` means measured depth from a real device. A
+                # `depth_active` means measured depth from a real device. A
                 # synthetic or replayed source is depth, but it is not a
                 # sensor, and labelling it as one is the misreporting this
                 # whole path was built to end.
-                self.tof_active = not source.synthetic
-                self.tof_simulated = self.tof_simulated or source.synthetic
-                self.tof_device_name = source.name
+                self.depth_active = not source.synthetic
+                self.depth_simulated = self.depth_simulated or source.synthetic
+                self.depth_device_name = source.name
                 print(f"[VisionPipeline] Depth source: {source.name}"
                       f"{' (synthetic)' if source.synthetic else ''}")
 
@@ -845,7 +854,7 @@ class VisionPipeline(threading.Thread):
             self.depth_stream.stop()
             self.depth_stream = None
             self.depth_map = None
-            self.tof_active = False
+            self.depth_active = False
         if self.is_alive() and threading.current_thread() is not self:
             self.join(timeout=join_timeout)
 
@@ -964,7 +973,7 @@ class VisionPipeline(threading.Thread):
             "frame":    bgr_frame,
             "scene_luma":     self.scene_luma,
             "low_light_gain": self.low_light_gain,
-            "depth_device":   self.tof_device_name if self.depth_stream else "",
+            "depth_device":   self.depth_device_name if self.depth_stream else "",
             "depth_fps":      self.depth_fps,
             # Hand (merged in from the primary hand's gesture dict)
             **gesture,
@@ -1086,7 +1095,7 @@ class VisionPipeline(threading.Thread):
             )
             return grid / 1000.0
 
-        if not self.tof_simulated:
+        if not self.depth_simulated:
             return None
 
         grid = np.full((rows, cols), 2.0, dtype=np.float32)   # far wall at 2 m
@@ -1278,26 +1287,26 @@ class VisionPipeline(threading.Thread):
             curl(tip, pip) for tip, pip in ((8, 6), (12, 10), (16, 14), (20, 18))
         ) / 4.0
 
-        # ── 4. ToF Depth Lookup ───────────────────────────────────────────────
-        tof_active, tof_z_raw, depth_source = self.sample_tof_depth(index_pos[0], index_pos[1], z_val)
+        # ── 4. Depth lookup ───────────────────────────────────────────────────
+        depth_active, depth_raw_m, depth_source = self.sample_depth(index_pos[0], index_pos[1], z_val)
 
         # Feed raw sample to calibrator during sampling window
         if self.tof_stabilizer.state == ToFStabilizer.STATE_SAMPLING:
-            self.tof_stabilizer.feed(tof_z_raw)
+            self.tof_stabilizer.feed(depth_raw_m)
 
         # Gate ambient vibration out of Z (no-op when inactive)
-        tof_z_m = self.tof_stabilizer.correct(tof_z_raw)
+        depth_m = self.tof_stabilizer.correct(depth_raw_m)
 
         # ── 5. Z-Push Click (opt-in via enable_z_click) ───────────────────────
-        # Driven by stabilized metric depth when a ToF source is present, so the
+        # Driven by stabilized metric depth when a sensor is present, so the
         # threshold is in real metres and can be floored by the stabilizer's
         # measured noise gate. Falls back to MediaPipe's relative Z otherwise.
         if self.enable_z_click:
             # OR'd with the 3-finger-pinch edge above, never assigned over it —
             # enabling the depth push must not silently disable the pinch click.
-            if tof_active:
+            if depth_active:
                 z_click, z_delta, xy_drift = self._detect_z_click(
-                    tof_z_m, index_pos,
+                    depth_m, index_pos,
                     threshold=max(_Z_CLICK_THRESHOLD_M, self.tof_stabilizer.noise_gate * 2.0),
                     gs=gs, source="tof",
                 )
@@ -1339,10 +1348,14 @@ class VisionPipeline(threading.Thread):
             "smoothing_enabled":   self.smoothing_enabled,
             "z_delta":             z_delta,
             "xy_drift":            xy_drift,
-            "tof_active":          tof_active,
-            "tof_z_m":             tof_z_m,
-            "tof_z_raw":           tof_z_raw,
+            "depth_active":        depth_active,
+            "depth_m":             depth_m,
+            "depth_m_raw":         depth_raw_m,
             "depth_source":        depth_source,
+            # Deprecated aliases -- see the schema note at the top.
+            "tof_active":          depth_active,
+            "tof_z_m":             depth_m,
+            "tof_z_raw":           depth_raw_m,
             "is_3_finger_pinching":is_3_pinching,
             "jitter":              jitter_stats,
             # Stabilizer telemetry
@@ -1380,13 +1393,13 @@ class VisionPipeline(threading.Thread):
         return gs.sign
 
     # ── ToF Depth Probe & Sampling ─────────────────────────────────────────────
-    def sample_tof_depth(self, px: int, py: int, lm_z: float = 0.0) -> tuple[bool, float, str]:
+    def sample_depth(self, px: int, py: int, lm_z: float = 0.0) -> tuple[bool, float, str]:
         """
         Samples physical depth (in meters) at 2D (X, Y) pixel coordinates from ToF camera frame.
         Falls back to relative estimation if ToF is inactive.
         """
-        if not (self.tof_active or self.tof_simulated):
-            return False, 0.0, "RGB MediaPipe Estimate"
+        if not (self.depth_active or self.depth_simulated):
+            return False, 0.0, "RGB estimate (no depth sensor)"
 
         z_m = None
 
@@ -1421,8 +1434,47 @@ class VisionPipeline(threading.Thread):
             z_m = 0.45 + (lm_z * 0.6)
 
         z_m = round(max(0.15, z_m), 4)
-        src_label = "ToF IR Hardware" if self.tof_active else "ToF Hardware (Simulated)"
+        # Say what it is. The old labels said "ToF Hardware" for a number
+        # computed from a MediaPipe landmark, which is how everyone came to
+        # believe this engine had a depth sensor in it.
+        src_label = ("Depth sensor (%s)" % self.depth_device_name
+                     if self.depth_active else "Simulated depth (no sensor)")
         return True, z_m, src_label
+
+    # ── Deprecated names ──────────────────────────────────────────────────────
+    # "ToF" described a time-of-flight sensor this engine never had: the
+    # numbers under these names were derived from a MediaPipe landmark. The
+    # canonical names are depth_*, but six games and their HUDs read the old
+    # ones, so they stay as aliases rather than breaking every consumer at
+    # once. They are settable because games assign tof_simulated directly.
+
+    @property
+    def tof_active(self) -> bool:
+        return self.depth_active
+
+    @tof_active.setter
+    def tof_active(self, value: bool) -> None:
+        self.depth_active = bool(value)
+
+    @property
+    def tof_simulated(self) -> bool:
+        return self.depth_simulated
+
+    @tof_simulated.setter
+    def tof_simulated(self, value: bool) -> None:
+        self.depth_simulated = bool(value)
+
+    @property
+    def tof_device_name(self) -> str:
+        return self.depth_device_name
+
+    @tof_device_name.setter
+    def tof_device_name(self, value: str) -> None:
+        self.depth_device_name = str(value)
+
+    def sample_tof_depth(self, px: int, py: int, lm_z: float = 0.0):
+        """Deprecated alias of `sample_depth`."""
+        return self.sample_depth(px, py, lm_z)
 
     # ── Z-push click algorithm ────────────────────────────────────────────────
     def _detect_z_click(self, z_now: float, xy_now: tuple,
@@ -1466,7 +1518,7 @@ class VisionPipeline(threading.Thread):
 
         # ToF metres (~0.45) and MediaPipe relative Z (~±0.05) are incompatible
         # units. If the depth source flipped since the last sample (sensor
-        # drop-out, `tof_simulated` toggled mid-session), a window max in one
+        # drop-out, `depth_simulated` toggled mid-session), a window max in one
         # unit against z_now in the other reads as a huge push and fires a
         # phantom click — so the window restarts on every source change.
         if source != gs.z_source:
@@ -1614,10 +1666,13 @@ class VisionPipeline(threading.Thread):
             "smoothing_enabled": self.smoothing_enabled,
             "z_delta":           0.0,
             "xy_drift":          0.0,
+            "depth_active":      False,
+            "depth_m":           0.0,
+            "depth_m_raw":       0.0,
+            "depth_source":      "RGB estimate (no depth sensor)",
             "tof_active":        False,
             "tof_z_m":           0.0,
             "tof_z_raw":         0.0,
-            "depth_source":      "RGB MediaPipe Estimate",
             "is_3_finger_pinching": False,
             # Full zeroed stat dict rather than {} — the HUD reads
             # jitter["raw_jitter_std"] and used to see an empty mapping here.
@@ -1639,7 +1694,7 @@ class VisionPipeline(threading.Thread):
             "frame":    frame,
             "scene_luma":     self.scene_luma,
             "low_light_gain": self.low_light_gain,
-            "depth_device":   self.tof_device_name if self.depth_stream else "",
+            "depth_device":   self.depth_device_name if self.depth_stream else "",
             "depth_fps":      self.depth_fps,
             **self._empty_gesture(),
             "hands":      (),
