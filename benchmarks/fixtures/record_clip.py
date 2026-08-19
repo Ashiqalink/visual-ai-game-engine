@@ -1,7 +1,12 @@
 """One-off recorder for benchmarks/fixtures/hand_motion.mp4. Not part of the bench suite."""
+import os
 import sys
 import time
 import cv2
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))), "src"))
+from visual_ai.capture import default_backend
 
 OUT = "hand_motion.mp4"
 DURATION_S = 12
@@ -10,7 +15,9 @@ WIDTH, HEIGHT, FPS = 1280, 720, 30
 
 def main():
     cam_index = int(sys.argv[1]) if len(sys.argv) > 1 else 0
-    cap = cv2.VideoCapture(cam_index, cv2.CAP_DSHOW)
+    # Platform backend: CAP_DSHOW is Windows-only, and this is the last
+    # place in the repo that asked for it unconditionally.
+    cap = cv2.VideoCapture(cam_index, default_backend())
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
     cap.set(cv2.CAP_PROP_FPS, FPS)
