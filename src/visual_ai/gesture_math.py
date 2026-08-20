@@ -30,11 +30,7 @@ def _extract_xy(pt: Point2D) -> Tuple[float, float]:
 
 def get_landmark_distance(pt1: Point2D, pt2: Point2D) -> float:
     """Calculate Euclidean distance between two landmark points."""
-    x1, y1 = _extract_xy(pt1)
-    x2, y2 = _extract_xy(pt2)
-    dx = x1 - x2
-    dy = y1 - y2
-    return math.sqrt(dx * dx + dy * dy)
+    return math.dist(_extract_xy(pt1), _extract_xy(pt2))
 
 
 def get_finger_angle(joint_a: Point2D, joint_b: Point2D, joint_c: Point2D) -> float:

@@ -39,9 +39,7 @@ class Vector2:
         return self.x * other.x + self.y * other.y
 
     def distance_to(self, other: "Vector2") -> float:
-        dx = self.x - other.x
-        dy = self.y - other.y
-        return math.sqrt(dx * dx + dy * dy)
+        return math.hypot(self.x - other.x, self.y - other.y)
 
     def angle_between(self, other: "Vector2") -> float:
         """Return angle between vectors in radians [0, pi]."""
@@ -86,10 +84,7 @@ class Vector3:
         )
 
     def distance_to(self, other: "Vector3") -> float:
-        dx = self.x - other.x
-        dy = self.y - other.y
-        dz = self.z - other.z
-        return math.sqrt(dx * dx + dy * dy + dz * dz)
+        return math.hypot(self.x - other.x, self.y - other.y, self.z - other.z)
 
     def to_tuple(self) -> Tuple[float, float, float]:
         return (self.x, self.y, self.z)
