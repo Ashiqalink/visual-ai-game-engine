@@ -604,6 +604,14 @@ _SPRITE_SCALE_FINALIZERS: dict[int, weakref.finalize] = {}
 # and costs one frame of recomputation at worst.
 _SPRITE_CACHE_MAX = 256
 
+# The frame-independent half of the alpha composite, keyed exactly like
+# _SPRITE_SCALE_CACHE so the same finalizers and invalidation reach it. Held
+# as float32, which is 16 bytes per pixel against the 4 of the RGBA source, so
+# it gets its own tighter bound: this is a speed-for-memory trade and only the
+# sprites actually being drawn need to be in it.
+_SPRITE_BLEND_CACHE: dict[tuple[int, int, int], tuple[np.ndarray, np.ndarray]] = {}
+_SPRITE_BLEND_MAX = 64
+
 
 def invalidate_sprite_cache(sprite: np.ndarray | None = None) -> None:
     """
@@ -615,19 +623,47 @@ def invalidate_sprite_cache(sprite: np.ndarray | None = None) -> None:
     """
     if sprite is None:
         _SPRITE_SCALE_CACHE.clear()
+        _SPRITE_BLEND_CACHE.clear()
         _SPRITE_SCALE_FINALIZERS.clear()
         return
-    key_id = id(sprite)
-    for key in [k for k in _SPRITE_SCALE_CACHE if k[0] == key_id]:
-        del _SPRITE_SCALE_CACHE[key]
-    _SPRITE_SCALE_FINALIZERS.pop(key_id, None)
+    _drop_sprite_entries(id(sprite))
 
 
 def _drop_sprite_entries(key_id: int) -> None:
     """Finalizer callback: evict every size cached for a collected source."""
     for key in [k for k in _SPRITE_SCALE_CACHE if k[0] == key_id]:
         del _SPRITE_SCALE_CACHE[key]
+    for key in [k for k in _SPRITE_BLEND_CACHE if k[0] == key_id]:
+        del _SPRITE_BLEND_CACHE[key]
     _SPRITE_SCALE_FINALIZERS.pop(key_id, None)
+
+
+def _blend_layers(key: tuple[int, int, int],
+                  sprite: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """
+    The frame-independent half of ``sprite``'s alpha composite, memoised.
+
+    The blend is ``alpha * rgb + (1 - alpha) * target``; only the last factor
+    depends on the frame, so ``alpha * rgb`` and ``1 - alpha`` are the same
+    every frame a sprite is drawn at the same size. Precomputing them halves
+    the per-frame work and is bit-identical, because neither the operands nor
+    the order they are combined in changes — only how often they are computed.
+
+    Both come out contiguous, which is most of the win: ``sprite[..., :3]`` is
+    a strided view into an interleaved RGBA buffer, and numpy is markedly
+    slower over one of those.
+    """
+    hit = _SPRITE_BLEND_CACHE.get(key)
+    if hit is not None:
+        return hit
+
+    alpha = sprite[..., 3:4].astype(np.float32) / 255.0
+    layers = (alpha * sprite[..., :3], 1.0 - alpha)
+
+    if len(_SPRITE_BLEND_CACHE) >= _SPRITE_BLEND_MAX:
+        _SPRITE_BLEND_CACHE.clear()
+    _SPRITE_BLEND_CACHE[key] = layers
+    return layers
 
 
 def _resize_cached(source: np.ndarray, rgba: np.ndarray,
@@ -682,6 +718,10 @@ def blit_sprite(frame: np.ndarray, sprite: np.ndarray, cx: int, cy: int,
     cv2 = _cv2()
     source = sprite
     sprite = to_rgba(sprite)
+    # The blend layers are memoised only for sprites that came out of the
+    # resize cache: that path is the one with a bound and a finalizer on
+    # `source`, so a key can never outlive the array it identifies.
+    blend_key = None
 
     if size is not None:
         size = int(size)
@@ -693,6 +733,7 @@ def blit_sprite(frame: np.ndarray, sprite: np.ndarray, cx: int, cy: int,
             # with it below is a read (the alpha composite) or warpAffine,
             # which allocates its own output.
             sprite = _resize_cached(source, sprite, size, size)
+            blend_key = (id(source), size, size)
 
     if angle:
         # Rotate about the sprite's true centre into a canvas that covers the
@@ -708,6 +749,9 @@ def blit_sprite(frame: np.ndarray, sprite: np.ndarray, cx: int, cy: int,
         matrix[1, 2] += out_h / 2.0 - h / 2.0
         sprite = cv2.warpAffine(sprite, matrix, (out_w, out_h), flags=cv2.INTER_CUBIC,
                                 borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
+        # warpAffine allocated a new array, and the angle changes frame to
+        # frame, so there is nothing here worth remembering.
+        blend_key = None
 
     height, width = sprite.shape[:2]
     y0, x0 = int(cy) - height // 2, int(cx) - width // 2
@@ -717,11 +761,20 @@ def blit_sprite(frame: np.ndarray, sprite: np.ndarray, cx: int, cy: int,
     if fy0 >= fy1 or fx0 >= fx1:
         return
 
-    patch = sprite[fy0 - y0:fy1 - y0, fx0 - x0:fx1 - x0]
+    sy0, sx0 = fy0 - y0, fx0 - x0
+    sy1, sx1 = fy1 - y0, fx1 - x0
     target = frame[fy0:fy1, fx0:fx1]
-    alpha = (patch[..., 3:4].astype(np.float32)) / 255.0
-    frame[fy0:fy1, fx0:fx1] = (
-        alpha * patch[..., :3] + (1.0 - alpha) * target).astype(frame.dtype)
+
+    if blend_key is not None:
+        pre_rgb, inv_alpha = _blend_layers(blend_key, sprite)
+        frame[fy0:fy1, fx0:fx1] = (
+            pre_rgb[sy0:sy1, sx0:sx1]
+            + inv_alpha[sy0:sy1, sx0:sx1] * target).astype(frame.dtype)
+    else:
+        patch = sprite[sy0:sy1, sx0:sx1]
+        alpha = (patch[..., 3:4].astype(np.float32)) / 255.0
+        frame[fy0:fy1, fx0:fx1] = (
+            alpha * patch[..., :3] + (1.0 - alpha) * target).astype(frame.dtype)
 
 
 def blit_ellipse_alpha(frame: np.ndarray, center: tuple[int, int],
