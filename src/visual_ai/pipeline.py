@@ -548,6 +548,10 @@ class VisionPipeline(threading.Thread):
         self._gs = self._gs_slots[0]
         self.jitter_analyzer = self._jitter_slots[0]
 
+        # Size-dependent parts of the calibration overlay, built on first use.
+        # See _calibration_chrome().
+        self._calib_chrome: dict | None = None
+
         self.last_error: str | None = None
         self.camera_available: bool = False
 
@@ -1563,6 +1567,58 @@ class VisionPipeline(threading.Thread):
         return False, delta_z, drift
 
     # ── Stabilizer Warning Overlay ────────────────────────────────────────────
+    #: Static text of the calibration overlay: (text, y_ratio, scale_k, BGR, thickness).
+    _CALIB_STATIC_TEXT = (
+        ("!! LID-SHAKE STABILIZATION !!",         0.32, 1.05, (0, 140, 255),   3),
+        ("Please do not move or change position", 0.46, 0.75, (255, 255, 255), 2),
+        ("Press  X  to cancel",                   0.90, 0.50, (140, 140, 140), 1),
+    )
+
+    def _calibration_chrome(self, h: int, w: int) -> dict:
+        """
+        The parts of the calibration overlay that depend only on frame size.
+
+        Built once per resolution and reused. This whole overlay runs in the
+        capture thread on every frame of a 3-second calibration, and it used to
+        allocate a full-frame tint buffer and re-measure four fixed strings each
+        time in order to draw the same pixels in the same places.
+        """
+        cached = self._calib_chrome
+        if cached is not None and cached["size"] == (h, w):
+            return cached
+
+        scale_ref = w / 800.0
+        tint = np.empty((h, w, 3), dtype=np.uint8)
+        tint[:] = (15, 10, 30)                       # deep navy
+
+        placed = []
+        for text, y_ratio, scale_k, color, thick in self._CALIB_STATIC_TEXT:
+            scale = scale_k * scale_ref
+            (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, scale, thick)
+            placed.append((text, (w - tw) // 2, int(h * y_ratio), scale, color, thick))
+
+        bar_w = int(w * 0.60)
+        chrome = {
+            "size":       (h, w),
+            "tint":       tint,
+            "scale_ref":  scale_ref,
+            "secs_scale": 0.65 * scale_ref,
+            "secs_y":     int(h * 0.58),
+            "static":     placed,
+            "bar":        ((w - bar_w) // 2, int(h * 0.68), bar_w, int(14 * scale_ref)),
+            "ring":       (w // 2, int(h * 0.80), int(28 * scale_ref)),
+        }
+        self._calib_chrome = chrome
+        return chrome
+
+    @staticmethod
+    def _calib_text(frame, text, tx, ty, scale, color, thick):
+        """Centred DUPLEX text with the overlay's drop-shadow."""
+        cv2.putText(frame, text, (tx + 2, ty + 2),
+                    cv2.FONT_HERSHEY_DUPLEX, scale, (0, 0, 0), thick + 2)
+        cv2.putText(frame, text, (tx, ty),
+                    cv2.FONT_HERSHEY_DUPLEX, scale, color, thick)
+
     def _draw_stabilizer_warning(self, frame: np.ndarray, progress: float) -> np.ndarray:
         """
         Draw a full-screen warning overlay onto the BGR frame during stabilization
@@ -1575,45 +1631,25 @@ class VisionPipeline(threading.Thread):
         progress : float       calibration progress 0.0 → 1.0
         """
         h, w = frame.shape[:2]
+        chrome = self._calibration_chrome(h, w)
 
         # ── 1. Dark semi-transparent wash ────────────────────────────────────
-        overlay = np.zeros((h, w, 3), dtype=np.uint8)
-        overlay[:] = (15, 10, 30)                    # deep navy tint
-        frame = cv2.addWeighted(frame, 0.22, overlay, 0.78, 0)
+        frame = cv2.addWeighted(frame, 0.22, chrome["tint"], 0.78, 0)
 
         # ── 2. Text blocks ───────────────────────────────────────────────────
-        scale_ref = w / 800.0
+        for text, tx, ty, scale, color, thick in chrome["static"]:
+            self._calib_text(frame, text, tx, ty, scale, color, thick)
 
-        header_text  = "!! LID-SHAKE STABILIZATION !!"
-        message_text = "Please do not move or change position"
-        secs_text    = f"Calibrating...  {self.tof_stabilizer.time_remaining:.1f}s remaining"
-        hint_text    = "Press  X  to cancel"
-
-        text_specs = [
-            # (text,          y_ratio, font_scale,        color BGR,          thickness)
-            (header_text,    0.32,    1.05 * scale_ref,  (0, 140, 255),      3),
-            (message_text,   0.46,    0.75 * scale_ref,  (255, 255, 255),    2),
-            (secs_text,      0.58,    0.65 * scale_ref,  (0, 220, 200),      2),
-            (hint_text,      0.90,    0.50 * scale_ref,  (140, 140, 140),    1),
-        ]
-
-        for text, y_ratio, scale, color, thick in text_specs:
-            (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, scale, thick)
-            tx = (w - tw) // 2
-            ty = int(h * y_ratio)
-            # Drop-shadow
-            cv2.putText(frame, text, (tx + 2, ty + 2),
-                        cv2.FONT_HERSHEY_DUPLEX, scale, (0, 0, 0), thick + 2)
-            cv2.putText(frame, text, (tx, ty),
-                        cv2.FONT_HERSHEY_DUPLEX, scale, color, thick)
+        # The only line whose width changes frame to frame, so the only one
+        # still worth measuring here.
+        secs_text = f"Calibrating...  {self.tof_stabilizer.time_remaining:.1f}s remaining"
+        scale = chrome["secs_scale"]
+        (tw, _), _ = cv2.getTextSize(secs_text, cv2.FONT_HERSHEY_DUPLEX, scale, 2)
+        self._calib_text(frame, secs_text, (w - tw) // 2, chrome["secs_y"],
+                         scale, (0, 220, 200), 2)
 
         # ── 3. Progress bar ──────────────────────────────────────────────────
-        bar_w  = int(w * 0.60)
-        bar_h  = int(14 * scale_ref)
-        bar_x  = (w - bar_w) // 2
-        bar_y  = int(h * 0.68)
-        radius = max(1, bar_h // 2)
-
+        bar_x, bar_y, bar_w, bar_h = chrome["bar"]
         cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
                       (50, 50, 60), -1)
         fill_w = int(bar_w * progress)
@@ -1622,12 +1658,9 @@ class VisionPipeline(threading.Thread):
                           (bar_x + fill_w, bar_y + bar_h), (0, 180, 255), -1)
         cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
                       (100, 100, 110), 1)
-        _ = radius   # suppress unused warning
 
         # ── 4. Countdown ring ────────────────────────────────────────────────
-        cx     = w // 2
-        cy     = int(h * 0.80)
-        ring_r = int(28 * scale_ref)
+        cx, cy, ring_r = chrome["ring"]
         angle_end = int(360 * progress)             # arc sweeps 0 → 360 as time passes
 
         cv2.circle(frame, (cx, cy), ring_r, (55, 55, 65), 3)

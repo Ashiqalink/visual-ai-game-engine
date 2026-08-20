@@ -263,5 +263,41 @@ class TestFilterTuning(unittest.TestCase):
         self.assertFalse(p._gs.index_filter.initialized)
 
 
+class TestCalibrationOverlayCache(unittest.TestCase):
+    """
+    The overlay runs in the capture thread on every frame of a 3-second
+    calibration. Everything size-dependent is built once per resolution, so the
+    cache has to survive a resolution change rather than keep drawing the
+    previous frame's geometry.
+    """
+
+    def test_chrome_is_reused_for_the_same_size(self):
+        p = _pipeline()
+        first = p._calibration_chrome(480, 640)
+        self.assertIs(p._calibration_chrome(480, 640), first)
+        self.assertIs(first["tint"], p._calibration_chrome(480, 640)["tint"])
+
+    def test_chrome_is_rebuilt_when_the_frame_size_changes(self):
+        p = _pipeline()
+        small = p._calibration_chrome(480, 640)
+        large = p._calibration_chrome(720, 1280)
+        self.assertIsNot(small, large)
+        self.assertEqual(large["tint"].shape, (720, 1280, 3))
+        # ...and switching back rebuilds again rather than serving 1280-wide
+        # geometry into a 640-wide frame.
+        again = p._calibration_chrome(480, 640)
+        self.assertEqual(again["tint"].shape, (480, 640, 3))
+
+    def test_overlay_covers_the_whole_frame_at_any_size(self):
+        p = _pipeline()
+        p.tof_simulated = True
+        for h, w in ((480, 640), (720, 1280), (480, 640)):
+            frame = np.zeros((h, w, 3), dtype=np.uint8)
+            out = p._draw_stabilizer_warning(frame, 0.5)
+            self.assertEqual(out.shape, (h, w, 3))
+            # The navy wash is 0.78 of (15, 10, 30) over a black frame.
+            self.assertEqual(tuple(int(v) for v in out[0, 0]), (12, 8, 23))
+
+
 if __name__ == "__main__":
     unittest.main()
