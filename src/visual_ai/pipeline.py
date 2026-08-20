@@ -575,11 +575,18 @@ class VisionPipeline(threading.Thread):
         )
 
     def _apply_filter_tuning(self) -> None:
-        """Push current tuning onto the live filters without dropping their state."""
-        for f in (self._gs.index_filter, self._gs.centroid_filter):
-            if f is not None:
-                f.min_cutoff = self.filter_min_cutoff
-                f.beta = self.filter_beta
+        """
+        Push current tuning onto the live filters without dropping their state.
+
+        Every slot, not just `self._gs`. Retuning slot 0 alone left the second
+        hand running the settings it was built with, so `set_smooth_alpha` moved
+        one hand and not the other.
+        """
+        for gs in self._gs_slots:
+            for f in (gs.index_filter, gs.centroid_filter):
+                if f is not None:
+                    f.min_cutoff = self.filter_min_cutoff
+                    f.beta = self.filter_beta
 
     def set_smooth_alpha(self, alpha: float) -> None:
         """
