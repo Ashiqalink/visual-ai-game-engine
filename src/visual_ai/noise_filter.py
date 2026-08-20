@@ -316,25 +316,35 @@ class PipelineNoiseFilter:
 
     def process_payload(self, payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """
-        Processes pipeline payload dict, returning a shallow copy.
-        Zeroes out gesture trigger flags when inside noise window.
+        Zero out gesture trigger flags while inside the noise window.
 
         Only keys already present are modified — the filter never invents keys,
-        so a payload shape stays exactly as the pipeline defined it.
+        so a payload shape stays exactly as the pipeline defined it. Inside the
+        window the result is a shallow copy and the caller's dict is untouched;
+        outside it the caller's dict is handed straight back.
         """
         if payload is None:
             return None
 
-        # Create shallow copy of payload to preserve raw data if needed
-        filtered_payload = payload.copy()
+        # The window is open for the first couple of seconds of a session and
+        # shut for the rest of it — and shut permanently when noise_duration is
+        # <= 0, which is how the filter ships. Copying a ~55-key payload every
+        # frame in order to change nothing in it was the entire per-frame cost
+        # of a feature that is off by default. Nothing is modified on this path,
+        # so there is no raw data left for a copy to preserve.
+        #
+        # is_active() is still what decides, so it keeps starting the timer on
+        # first evaluation exactly as before.
+        if not self.filter.is_active():
+            return payload
 
-        if self.filter.is_active():
-            for key in self.SUPPRESSED_FLAGS:
-                if key in filtered_payload:
-                    filtered_payload[key] = False
-            for key in self.SUPPRESSED_SCALARS:
-                if key in filtered_payload:
-                    filtered_payload[key] = 0.0
+        filtered_payload = payload.copy()
+        for key in self.SUPPRESSED_FLAGS:
+            if key in filtered_payload:
+                filtered_payload[key] = False
+        for key in self.SUPPRESSED_SCALARS:
+            if key in filtered_payload:
+                filtered_payload[key] = 0.0
 
         return filtered_payload
 
