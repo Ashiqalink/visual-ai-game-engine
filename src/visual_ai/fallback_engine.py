@@ -1,5 +1,4 @@
 import math
-import numpy as np
 from dataclasses import dataclass, field
 import random
 from typing import List, Optional, Any
@@ -230,7 +229,7 @@ class PythonFallbackEngine:
         self.vy += self.gravity * dt
         dx = self.target_x - self.x
         dy = self.target_y - self.y
-        dist = float(np.sqrt(dx * dx + dy * dy))
+        dist = math.sqrt(dx * dx + dy * dy)
         if dist > 1.0:
             pull_strength = 150.0
             self.vx += (dx / dist) * pull_strength * dt
@@ -279,7 +278,7 @@ class PythonFallbackEngine:
 
             distObjX = self.x - closestX
             distObjY = self.y - closestY
-            distance = float(np.sqrt(distObjX * distObjX + distObjY * distObjY))
+            distance = math.sqrt(distObjX * distObjX + distObjY * distObjY)
 
             if distance < self.radius:
                 if distance > 0:
@@ -289,7 +288,7 @@ class PythonFallbackEngine:
                     self.x = closestX + nx * self.radius
                     self.y = closestY + ny * self.radius
 
-                    impact = float(np.sqrt(self.vx * self.vx + self.vy * self.vy))
+                    impact = math.sqrt(self.vx * self.vx + self.vy * self.vy)
                     dotProduct = self.vx * nx + self.vy * ny
 
                     if dotProduct < 0:
