@@ -1,5 +1,5 @@
 """
-test_tof_stabilizer.py — Regression tests for ToFStabilizer.
+test_depth_stabilizer.py — Regression tests for DepthStabilizer.
 
 Each test here pins down a bug that made stabilization unusable:
   * calibration subtracted the absolute mean depth, collapsing every reading
@@ -14,25 +14,25 @@ import math
 import time
 import unittest
 
-from visual_ai.tof_stabilizer import ToFStabilizer
+from visual_ai.depth_stabilizer import DepthStabilizer
 
 
 def _calibrate(stab, depth=0.45, shake=0.003, duration=1.0):
     """Run a full calibration window feeding `depth` +/- `shake` metres."""
     stab.begin(duration)
     i = 0
-    while stab.state == ToFStabilizer.STATE_SAMPLING:
+    while stab.state == DepthStabilizer.STATE_SAMPLING:
         stab.feed(depth + math.sin(i * 1.7) * shake)
         i += 1
         time.sleep(0.004)
     return stab
 
 
-class TestToFStabilizer(unittest.TestCase):
+class TestDepthStabilizer(unittest.TestCase):
 
     def test_calibration_measures_baseline_and_noise(self):
-        s = _calibrate(ToFStabilizer(), depth=0.45, shake=0.004)
-        self.assertEqual(s.state, ToFStabilizer.STATE_ACTIVE)
+        s = _calibrate(DepthStabilizer(), depth=0.45, shake=0.004)
+        self.assertEqual(s.state, DepthStabilizer.STATE_ACTIVE)
         self.assertAlmostEqual(s.z_baseline, 0.45, delta=0.005)
         self.assertGreater(s.z_noise_amplitude, 0.0005)
         self.assertGreater(s.noise_gate, 0.0)
@@ -40,26 +40,26 @@ class TestToFStabilizer(unittest.TestCase):
 
     def test_absolute_depth_is_preserved(self):
         """Correction must not subtract the baseline outright."""
-        s = _calibrate(ToFStabilizer(), depth=0.45, shake=0.003)
+        s = _calibrate(DepthStabilizer(), depth=0.45, shake=0.003)
         for target in (0.40, 0.30, 0.60):
             with self.subTest(target=target):
                 got = s.correct(target)
                 self.assertAlmostEqual(got, target, delta=0.02)
 
     def test_readings_do_not_collapse_to_the_clamp(self):
-        s = _calibrate(ToFStabilizer(), depth=0.45, shake=0.003)
+        s = _calibrate(DepthStabilizer(), depth=0.45, shake=0.003)
         got = [s.correct(z) for z in (0.45, 0.40, 0.35, 0.30, 0.25)]
-        self.assertTrue(all(g > ToFStabilizer.MIN_DEPTH_M + 0.05 for g in got), got)
+        self.assertTrue(all(g > DepthStabilizer.MIN_DEPTH_M + 0.05 for g in got), got)
         # Monotonically approaching the camera must stay monotonic.
         self.assertTrue(all(b < a for a, b in zip(got, got[1:])), got)
 
     def test_vibration_is_suppressed_at_rest(self):
-        s = _calibrate(ToFStabilizer(), depth=0.45, shake=0.004)
+        s = _calibrate(DepthStabilizer(), depth=0.45, shake=0.004)
         out = [s.correct(0.45 + math.sin(i * 2.3) * 0.004) for i in range(60)]
         self.assertLess(max(out) - min(out), 0.004)
 
     def test_real_movement_still_passes_through(self):
-        s = _calibrate(ToFStabilizer(), depth=0.45, shake=0.002)
+        s = _calibrate(DepthStabilizer(), depth=0.45, shake=0.002)
         rest = s.correct(0.45)
         pushed = None
         for z in (0.43, 0.40, 0.36, 0.32, 0.30):
@@ -68,28 +68,28 @@ class TestToFStabilizer(unittest.TestCase):
 
     def test_tick_finalises_without_any_samples(self):
         """A calibration started with no hand in view must not hang."""
-        s = ToFStabilizer()
+        s = DepthStabilizer()
         s.begin(1.0)
         t0 = time.time()
         while time.time() - t0 < 1.3:
             s.tick()
             time.sleep(0.01)
-        self.assertNotEqual(s.state, ToFStabilizer.STATE_SAMPLING)
-        self.assertEqual(s.state, ToFStabilizer.STATE_INACTIVE)
+        self.assertNotEqual(s.state, DepthStabilizer.STATE_SAMPLING)
+        self.assertEqual(s.state, DepthStabilizer.STATE_INACTIVE)
         self.assertIsNotNone(s.last_error)
 
     def test_zero_depth_stream_is_rejected(self):
         """ToF disabled reports 0.0 m; that must not become a baseline."""
-        s = ToFStabilizer()
+        s = DepthStabilizer()
         s.begin(1.0)
-        while s.state == ToFStabilizer.STATE_SAMPLING:
+        while s.state == DepthStabilizer.STATE_SAMPLING:
             s.feed(0.0)
             time.sleep(0.004)
-        self.assertEqual(s.state, ToFStabilizer.STATE_INACTIVE)
+        self.assertEqual(s.state, DepthStabilizer.STATE_INACTIVE)
         self.assertEqual(s.sample_count, 0)
 
     def test_non_finite_samples_are_discarded(self):
-        s = ToFStabilizer()
+        s = DepthStabilizer()
         s.begin(1.0)
         s.feed(float("nan"))
         s.feed(float("inf"))
@@ -98,7 +98,7 @@ class TestToFStabilizer(unittest.TestCase):
         s.cancel()
 
     def test_correct_is_a_noop_before_calibration(self):
-        s = ToFStabilizer()
+        s = DepthStabilizer()
         self.assertEqual(s.correct(0.42), 0.42)
         self.assertEqual(s.noise_gate, 0.0)
         s.begin(1.0)
@@ -106,46 +106,46 @@ class TestToFStabilizer(unittest.TestCase):
         s.cancel()
 
     def test_invalid_reading_passes_through_uncorrected(self):
-        s = _calibrate(ToFStabilizer(), depth=0.45)
+        s = _calibrate(DepthStabilizer(), depth=0.45)
         self.assertEqual(s.correct(0.0), 0.0)
         self.assertTrue(math.isnan(s.correct(float("nan"))))
 
     def test_cancel_and_disable(self):
-        s = ToFStabilizer()
+        s = DepthStabilizer()
         s.begin(2.0)
         s.cancel()
-        self.assertEqual(s.state, ToFStabilizer.STATE_INACTIVE)
+        self.assertEqual(s.state, DepthStabilizer.STATE_INACTIVE)
         self.assertEqual(s.time_remaining, 0.0)
 
-        s = _calibrate(ToFStabilizer(), depth=0.45)
+        s = _calibrate(DepthStabilizer(), depth=0.45)
         s.disable()
-        self.assertEqual(s.state, ToFStabilizer.STATE_INACTIVE)
+        self.assertEqual(s.state, DepthStabilizer.STATE_INACTIVE)
         self.assertEqual(s.z_baseline, 0.0)
         self.assertEqual(s.z_noise_amplitude, 0.0)
 
     def test_cancel_restores_previous_calibration(self):
         """Cancelling a recalibration restores the previous completed calibration."""
-        s = _calibrate(ToFStabilizer(), depth=0.45, shake=0.003)
+        s = _calibrate(DepthStabilizer(), depth=0.45, shake=0.003)
         baseline = s.z_baseline
         amp = s.z_noise_amplitude
-        self.assertEqual(s.state, ToFStabilizer.STATE_ACTIVE)
+        self.assertEqual(s.state, DepthStabilizer.STATE_ACTIVE)
 
         s.begin(2.0)
-        self.assertEqual(s.state, ToFStabilizer.STATE_SAMPLING)
+        self.assertEqual(s.state, DepthStabilizer.STATE_SAMPLING)
         s.cancel()
-        self.assertEqual(s.state, ToFStabilizer.STATE_ACTIVE)
+        self.assertEqual(s.state, DepthStabilizer.STATE_ACTIVE)
         self.assertEqual(s.z_baseline, baseline)
         self.assertEqual(s.z_noise_amplitude, amp)
 
     def test_short_duration_is_clamped(self):
-        s = ToFStabilizer()
+        s = DepthStabilizer()
         s.begin(0.1)
         self.assertGreaterEqual(s.time_remaining, 0.5)
         s.cancel()
 
     def test_baseline_tracks_slow_drift(self):
         """Sustained in-gate offset should be absorbed, not reported forever."""
-        s = _calibrate(ToFStabilizer(), depth=0.45, shake=0.004)
+        s = _calibrate(DepthStabilizer(), depth=0.45, shake=0.004)
         gate = s.noise_gate
         drifted = 0.45 + gate * 0.8
         for _ in range(200):
@@ -167,7 +167,7 @@ class TestInjectableClock(unittest.TestCase):
 
     def test_window_follows_the_injected_clock(self):
         now = [100.0]
-        stab = ToFStabilizer(clock=lambda: now[0])
+        stab = DepthStabilizer(clock=lambda: now[0])
         stab.begin(duration=1.0)
         self.assertEqual(stab.state, "sampling")
 
@@ -182,7 +182,7 @@ class TestInjectableClock(unittest.TestCase):
 
     def test_progress_uses_the_injected_clock(self):
         now = [0.0]
-        stab = ToFStabilizer(clock=lambda: now[0])
+        stab = DepthStabilizer(clock=lambda: now[0])
         stab.begin(duration=2.0)
         now[0] = 1.0
         self.assertAlmostEqual(stab.progress, 0.5, places=2)
@@ -194,7 +194,7 @@ class TestInjectableClock(unittest.TestCase):
         wider than the whole range of motion a game cares about.
         """
         now = [0.0]
-        stab = ToFStabilizer(clock=lambda: now[0])
+        stab = DepthStabilizer(clock=lambda: now[0])
         stab.begin(duration=1.0)
         for i in range(30):
             now[0] += 1.0 / 30.0
@@ -211,9 +211,9 @@ class TestInjectableClock(unittest.TestCase):
         not capture it: the benches fast-forward a calibration by replacing
         `tof_stabilizer.time` wholesale, and a captured reference ignores that.
         """
-        import visual_ai.tof_stabilizer as module
+        import visual_ai.depth_stabilizer as module
 
-        stab = ToFStabilizer()
+        stab = DepthStabilizer()
         self.assertIsNone(stab.clock)
 
         class _FakeTime:

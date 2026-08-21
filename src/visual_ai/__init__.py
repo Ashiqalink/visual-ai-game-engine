@@ -14,6 +14,7 @@ from visual_ai.depth_source import (
     open_depth_source,
     probe_depth_sources,
 )
+from visual_ai.depth_stabilizer import DepthStabilizer, ToFStabilizer
 from visual_ai.fallback_engine import Entity, PythonFallbackEngine
 from visual_ai.gesture_math import (
     get_finger_angle,
@@ -101,7 +102,6 @@ from visual_ai.spritegen import (
     spec_from_dict,
     spec_to_dict,
 )
-from visual_ai.tof_stabilizer import DepthStabilizer, ToFStabilizer
 
 
 def __getattr__(name: str):

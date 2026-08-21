@@ -59,7 +59,7 @@ CLAHE_GRID = (8, 8)
 MEASURE_STRIDE = 8
 
 
-def measure_luma(bgr_frame, stride=MEASURE_STRIDE):
+def measure_luma(bgr_frame: np.ndarray, stride: int = MEASURE_STRIDE) -> float:
     """Mean luma (0-255) of a subsampled view of a BGR frame."""
     view = bgr_frame[::stride, ::stride]
     # Rec. 601 luma, which is what CLAHE will work on below.
@@ -83,9 +83,10 @@ class LowLightBoost:
         Whether the last frame was actually boosted.
     """
 
-    def __init__(self, dark_luma=DARK_LUMA, target_luma=TARGET_LUMA,
-                 max_gain=MAX_GAIN, slew=GAIN_SLEW, clahe_clip=CLAHE_CLIP,
-                 clahe_grid=CLAHE_GRID):
+    def __init__(self, dark_luma: float = DARK_LUMA, target_luma: float = TARGET_LUMA,
+                 max_gain: float = MAX_GAIN, slew: float = GAIN_SLEW,
+                 clahe_clip: float = CLAHE_CLIP,
+                 clahe_grid: tuple[int, int] = CLAHE_GRID) -> None:
         self.dark_luma = float(dark_luma)
         self.target_luma = float(target_luma)
         self.max_gain = float(max_gain)
@@ -97,11 +98,11 @@ class LowLightBoost:
         self._clahe = cv2.createCLAHE(clipLimit=float(clahe_clip),
                                       tileGridSize=tuple(clahe_grid))
 
-    def reset(self):
+    def reset(self) -> None:
         self.gain = 1.0
         self.active = False
 
-    def apply(self, bgr_frame):
+    def apply(self, bgr_frame: np.ndarray) -> np.ndarray:
         """Return a boosted copy, or the frame itself when it needs nothing.
 
         The caller may hand the result straight to a detector and to

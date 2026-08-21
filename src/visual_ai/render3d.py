@@ -3,7 +3,7 @@
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -107,22 +107,15 @@ class Camera3D:
         """
         Project a single 3D world point (x, y, z) into 2D screen coordinates (px_x, px_y, z_depth).
         Returns None if behind camera near plane.
+
+        A one-row call into :meth:`project_points`, so the projection maths
+        lives in exactly one place.
         """
-        px, py, pz = point[0], point[1], point[2]
-
-        # Camera-relative translation (assuming camera facing along -Z)
-        rel_x = px - self.position[0]
-        rel_y = py - self.position[1]
-        rel_z = self.position[2] - pz  # depth away from camera
-
-        if rel_z <= self.near:
+        coords, depths, valid = self.project_points(
+            np.array([point], dtype=np.float64))
+        if not valid[0]:
             return None
-
-        # Perspective projection
-        screen_x = (rel_x * self.focal_length / rel_z) + (self.screen_width / 2.0)
-        screen_y = (-rel_y * self.focal_length / rel_z) + (self.screen_height / 2.0)
-
-        return (int(round(screen_x)), int(round(screen_y)), rel_z)
+        return (int(round(coords[0, 0])), int(round(coords[0, 1])), float(depths[0]))
 
     def project_points(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -162,6 +155,31 @@ class Mesh3D:
     vertices: np.ndarray  # N x 3 float64
     faces: list[list[int]]  # List of face vertex index lists
     normals: np.ndarray | None = None  # Face or vertex normals
+
+    # Built on first render, never by hand — see face_groups().
+    _face_groups: list[tuple[np.ndarray, np.ndarray]] | None = field(
+        default=None, init=False, repr=False, compare=False)
+
+    def face_groups(self) -> list[tuple[np.ndarray, np.ndarray]]:
+        """
+        Faces bucketed by vertex count: ``(vertex indices (F, K), face numbers (F,))``.
+
+        The renderer needs an index array per face; building one per face per
+        frame was the bulk of its Python work. Faces never change after a mesh
+        is built, so the buckets are worked out once and reused. ``face
+        numbers`` are positions in ``self.faces``, kept so the draw order can
+        still tie-break the way a stable sort over the original list would.
+        """
+        if self._face_groups is None:
+            buckets: dict[int, list[int]] = {}
+            for i, face in enumerate(self.faces):
+                buckets.setdefault(len(face), []).append(i)
+            self._face_groups = [
+                (np.array([self.faces[i] for i in positions], dtype=np.intp),
+                 np.array(positions, dtype=np.intp))
+                for positions in buckets.values()
+            ]
+        return self._face_groups
 
     @classmethod
     def create_cube(cls, size: float = 50.0) -> "Mesh3D":
@@ -423,6 +441,29 @@ class Renderer3D:
         self.light_dir = np.array([lx, ly, lz], dtype=np.float64)
         self.light_dir /= np.linalg.norm(self.light_dir)
 
+    def _face_intensity(self, world_verts: np.ndarray, vertex_idx: np.ndarray) -> np.ndarray:
+        """
+        Flat-shading intensity for a whole bucket of faces of equal vertex count.
+
+        ``vertex_idx`` is (F, K); the normal comes from the first three
+        vertices of each face, as the per-face version always did.
+        """
+        v0 = world_verts[vertex_idx[:, 0]]
+        edge1 = world_verts[vertex_idx[:, 1]] - v0
+        edge2 = world_verts[vertex_idx[:, 2]] - v0
+
+        normals = np.cross(edge1, edge2)
+        lengths = np.linalg.norm(normals, axis=1)
+        degenerate = lengths <= 1e-6
+        normals[~degenerate] /= lengths[~degenerate, None]
+        normals[degenerate] = (0.0, 0.0, 1.0)
+
+        # Directional diffuse lighting with configurable ambient floor
+        dot_val = np.abs(normals @ self.light_dir)
+        return np.maximum(self.ambient_intensity, np.minimum(
+            1.0, self.ambient_intensity
+            + (1.0 - self.ambient_intensity) * dot_val * self.light_intensity))
+
     def render_mesh(
         self,
         frame: np.ndarray,
@@ -447,60 +488,52 @@ class Renderer3D:
         color_rgba = material.base_color
         bgr = (int(color_rgba[2] * 255), int(color_rgba[1] * 255), int(color_rgba[0] * 255))
 
-        # 3. Process faces for depth sorting (Painter's algorithm)
-        render_faces = []
-        for face in mesh.faces:
-            face_indices = np.array(face)
-            if not np.all(valid[face_indices]):
+        # 3. Depth, backface cull and shading, a bucket of same-sized faces at
+        #    a time (Painter's algorithm). Everything here used to be a numpy
+        #    call per face per frame.
+        screen_int = screen_coords.astype(np.int32)
+        render_faces = []   # (average depth, face number, screen points, intensity)
+
+        for vertex_idx, face_numbers in mesh.face_groups():
+            on_screen = valid[vertex_idx].all(axis=1)
+            if not on_screen.any():
                 continue
+            vertex_idx = vertex_idx[on_screen]
+            face_numbers = face_numbers[on_screen]
+            pts = screen_int[vertex_idx]                       # (F, K, 2)
 
-            # Average depth of face
-            avg_depth = np.mean(depths[face_indices])
-            render_faces.append((avg_depth, face_indices))
+            if pts.shape[1] >= 3:
+                # Backface culling in 2D screen space (skip polygons wound
+                # counter-clockwise / facing away)
+                cross_z = ((pts[:, 1, 0] - pts[:, 0, 0]) * (pts[:, 2, 1] - pts[:, 0, 1])
+                           - (pts[:, 1, 1] - pts[:, 0, 1]) * (pts[:, 2, 0] - pts[:, 0, 0]))
+                facing = cross_z > 0
+                if not facing.any():
+                    continue
+                vertex_idx = vertex_idx[facing]
+                face_numbers = face_numbers[facing]
+                pts = pts[facing]
+                shades = None if wireframe else self._face_intensity(world_verts, vertex_idx)
+            else:
+                # Too few vertices to have a normal — drawn unshaded, as before.
+                shades = None if wireframe else np.ones(len(vertex_idx))
 
-        # Sort faces back to front (largest depth first)
-        render_faces.sort(key=lambda item: item[0], reverse=True)
+            avg_depth = depths[vertex_idx].mean(axis=1)
+            for i in range(len(vertex_idx)):
+                render_faces.append((avg_depth[i], face_numbers[i], pts[i],
+                                     1.0 if shades is None else shades[i]))
+
+        # Sort faces back to front (largest depth first); equal depths keep
+        # mesh order, which is what the old stable sort over faces gave.
+        render_faces.sort(key=lambda item: (-item[0], item[1]))
 
         # 4. Render faces onto frame
         frame_h, frame_w = frame.shape[:2]
-        for avg_depth, face_indices in render_faces:
-            pts = screen_coords[face_indices].astype(np.int32)
-
-            # Backface culling in 2D screen space (skip polygons wound
-            # counter-clockwise / facing away)
-            if len(pts) >= 3:
-                cross_z = ((pts[1][0] - pts[0][0]) * (pts[2][1] - pts[0][1])
-                           - (pts[1][1] - pts[0][1]) * (pts[2][0] - pts[0][0]))
-                if cross_z <= 0:
-                    continue
-
+        for _, _, pts, intensity in render_faces:
             if wireframe:
                 cv2.polylines(frame, [pts], isClosed=True, color=bgr, thickness=1,
                               lineType=cv2.LINE_AA)
             else:
-                # Flat Shading calculation using normal
-                if len(face_indices) >= 3:
-                    v0 = world_verts[face_indices[0]]
-                    v1 = world_verts[face_indices[1]]
-                    v2 = world_verts[face_indices[2]]
-
-                    edge1 = v1 - v0
-                    edge2 = v2 - v0
-                    normal = np.cross(edge1, edge2)
-                    norm_len = np.linalg.norm(normal)
-                    if norm_len > 1e-6:
-                        normal /= norm_len
-                    else:
-                        normal = np.array([0.0, 0.0, 1.0])
-
-                    # Directional diffuse lighting with configurable ambient floor
-                    dot_val = abs(float(np.dot(normal, self.light_dir)))
-                    intensity = max(self.ambient_intensity, min(
-                        1.0, self.ambient_intensity
-                        + (1.0 - self.ambient_intensity) * dot_val * self.light_intensity))
-                else:
-                    intensity = 1.0
-
                 shaded_bgr = (
                     int(min(255, bgr[0] * intensity)),
                     int(min(255, bgr[1] * intensity)),

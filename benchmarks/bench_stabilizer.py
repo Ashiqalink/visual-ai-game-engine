@@ -1,5 +1,5 @@
 """
-bench_stabilizer.py — Test bench for ``visual_ai.tof_stabilizer.ToFStabilizer``.
+bench_stabilizer.py — Test bench for ``visual_ai.depth_stabilizer.DepthStabilizer``.
 
 Drives the stabilizer through synthetic ToF depth streams where the true depth
 is known exactly, so each run answers the two questions that matter and are in
@@ -31,8 +31,8 @@ from harness import BenchResult, Scenario, bootstrap, fake_clock, quiet
 
 _MODULES = bootstrap()
 
-import visual_ai.tof_stabilizer as tof_mod  # noqa: E402
-from visual_ai.tof_stabilizer import ToFStabilizer  # noqa: E402
+import visual_ai.depth_stabilizer as depth_mod  # noqa: E402
+from visual_ai.depth_stabilizer import DepthStabilizer  # noqa: E402
 
 FPS = signals.FPS
 DT = signals.DT
@@ -44,17 +44,17 @@ MM = 1000.0   # metres -> millimetres, the unit these numbers are readable in
 
 # ── Driving helpers ───────────────────────────────────────────────────────────
 
-def calibrate(stab: ToFStabilizer, samples, duration: float = CALIB_SECONDS) -> ToFStabilizer:
+def calibrate(stab: DepthStabilizer, samples, duration: float = CALIB_SECONDS) -> DepthStabilizer:
     """
     Run one full calibration window on the fake clock.
 
     Feeds ``samples`` one per frame, then advances past the end of the window
     and ticks once, exactly as ``VisionPipeline`` does from its capture loop.
     """
-    with fake_clock(tof_mod) as clock, quiet():
+    with fake_clock(depth_mod) as clock, quiet():
         stab.begin(duration)
         for z in samples:
-            if stab.state != ToFStabilizer.STATE_SAMPLING:
+            if stab.state != DepthStabilizer.STATE_SAMPLING:
                 break
             stab.feed(float(z))
             clock.advance(DT)
@@ -63,7 +63,7 @@ def calibrate(stab: ToFStabilizer, samples, duration: float = CALIB_SECONDS) -> 
     return stab
 
 
-def run_live(stab: ToFStabilizer, samples) -> np.ndarray:
+def run_live(stab: DepthStabilizer, samples) -> np.ndarray:
     """Push a live depth stream through ``correct()`` and collect the output."""
     with quiet():
         return np.asarray([stab.correct(float(z)) for z in samples], dtype=float)
@@ -78,7 +78,7 @@ def split(truth: np.ndarray, raw: np.ndarray):
 def _calibrated(truth, raw, **kwargs):
     """Calibrate on the head of a stream; return ``(stab, truth_tail, raw_tail)``."""
     calib, truth_tail, raw_tail = split(truth, raw)
-    stab = calibrate(ToFStabilizer(**kwargs), calib)
+    stab = calibrate(DepthStabilizer(**kwargs), calib)
     return stab, truth_tail, raw_tail
 
 
@@ -93,7 +93,7 @@ def scenario_calibration() -> Scenario:
     )
     truth, raw = signals.tof_rest(n=400, depth=0.45, shake_m=0.004)
     calib = raw[:CALIB_FRAMES]
-    stab = calibrate(ToFStabilizer(), calib)
+    stab = calibrate(DepthStabilizer(), calib)
 
     true_sigma = float(np.std(calib))
     scen.metrics = {
@@ -197,7 +197,7 @@ def scenario_punch_fidelity() -> Scenario:
     scen.check("error vs true depth", metrics.rmse(out, truth) * MM, "mm", max_value=15.0)
     scen.check("lag", metrics.lag_ms(out, truth, DT), "ms", max_value=50.0)
     scen.check("no collapse to clamp", float(np.min(out)) * MM,
-               min_value=(ToFStabilizer.MIN_DEPTH_M * MM) + 50.0, unit="mm",
+               min_value=(DepthStabilizer.MIN_DEPTH_M * MM) + 50.0, unit="mm",
                detail="a reading pinned at the 50 mm floor means the signal was destroyed")
 
     scen.traces = {
@@ -253,7 +253,7 @@ def scenario_blind_sensor() -> Scenario:
         description="Every reading is 0.0 (ToF off). Calibration must fail loudly, not activate.",
     )
     _, raw = signals.tof_blind(n=400)
-    stab = calibrate(ToFStabilizer(), raw[:CALIB_FRAMES])
+    stab = calibrate(DepthStabilizer(), raw[:CALIB_FRAMES])
 
     passthrough = run_live(stab, [0.45, 0.30, 0.0, float("nan")])
     clean = [v for v in passthrough[:2]]
@@ -278,10 +278,10 @@ def scenario_too_few_samples() -> Scenario:
     scen = Scenario(
         name="sparse sensor refused",
         description=f"One valid reading every 25 frames — under the "
-                    f"{ToFStabilizer.MIN_SAMPLES}-sample minimum.",
+                    f"{DepthStabilizer.MIN_SAMPLES}-sample minimum.",
     )
     _, raw = signals.tof_intermittent(n=400, valid_every=25)
-    stab = calibrate(ToFStabilizer(), raw[:CALIB_FRAMES])
+    stab = calibrate(DepthStabilizer(), raw[:CALIB_FRAMES])
 
     scen.metrics = {"state": stab.state, "last_error": stab.last_error or ""}
     scen.check("stayed inactive", 0.0 if stab.is_calibrated else 1.0, "", min_value=1.0,
@@ -354,12 +354,12 @@ def scenario_lifecycle() -> Scenario:
 
     with quiet():
         stab.disable()
-    disabled_ok = (stab.state == ToFStabilizer.STATE_INACTIVE
+    disabled_ok = (stab.state == DepthStabilizer.STATE_INACTIVE
                    and stab.z_baseline == 0.0
                    and abs(stab.correct(0.37) - 0.37) < 1e-9)
 
-    cancel_stab = ToFStabilizer()
-    with fake_clock(tof_mod) as clock, quiet():
+    cancel_stab = DepthStabilizer()
+    with fake_clock(depth_mod) as clock, quiet():
         cancel_stab.begin(3.0)
         for z in raw[:20]:
             cancel_stab.feed(float(z))
@@ -369,8 +369,8 @@ def scenario_lifecycle() -> Scenario:
         cancel_stab.cancel()
         clock.advance(10.0)
         cancel_stab.tick()
-    cancel_ok = (mid_state == ToFStabilizer.STATE_SAMPLING
-                 and cancel_stab.state == ToFStabilizer.STATE_INACTIVE)
+    cancel_ok = (mid_state == DepthStabilizer.STATE_SAMPLING
+                 and cancel_stab.state == DepthStabilizer.STATE_INACTIVE)
 
     scen.metrics = {
         "progress_at_cancel": progress,
@@ -390,7 +390,7 @@ def scenario_lifecycle() -> Scenario:
 def run() -> BenchResult:
     result = BenchResult(
         name="ToF lid-shake stabilizer",
-        subtitle=f"visual_ai.tof_stabilizer — {_MODULES['visual_ai.tof_stabilizer']}",
+        subtitle=f"visual_ai.depth_stabilizer — {_MODULES['visual_ai.depth_stabilizer']}",
     )
     result.scenarios = [
         scenario_calibration(),
@@ -452,7 +452,7 @@ def _cost_table() -> dict:
         "title": "Cost per frame",
         "note": "correct() runs once per captured frame",
         "headers": ["call", "µs / frame", "% of a 33 ms frame"],
-        "rows": [["ToFStabilizer.correct()", f"{us:,.2f}", f"{us / 33_333 * 100:,.4f}"]],
+        "rows": [["DepthStabilizer.correct()", f"{us:,.2f}", f"{us / 33_333 * 100:,.4f}"]],
         "aligns": "lrr",
     }
 

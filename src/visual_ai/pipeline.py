@@ -77,7 +77,7 @@ Queue payload (dict)
   "scene_luma"           : float,     # mean luma 0-255 before any boost
   "low_light_gain"       : float,     # gain applied; 1.0 = frame untouched
 
-  # Depth (see tof_stabilizer.py)
+  # Depth (see depth_stabilizer.py)
   "depth_active"         : bool,      # a real depth sensor is supplying this
   "depth_m"              : float,     # stabilized depth (m)
   "depth_m_raw"          : float,     # depth before stabilization (m)
@@ -122,11 +122,13 @@ import math
 import queue
 import threading
 import time
+import warnings
 
 import cv2
 import numpy as np
 
 from visual_ai.depth_source import DepthStream, open_depth_source
+from visual_ai.depth_stabilizer import DepthStabilizer
 from visual_ai.gesture_math import get_landmark_velocity
 from visual_ai.gesture_mlp import GestureMLP, landmarks_to_features
 from visual_ai.jitter_analyzer import JitterAnalyzer
@@ -136,7 +138,6 @@ from visual_ai.noise_filter import (
     PipelineNoiseFilter,
     ema_alpha_to_cutoff,
 )
-from visual_ai.tof_stabilizer import ToFStabilizer
 
 # ── Optional MediaPipe imports ────────────────────────────────────────────────
 HAS_MEDIAPIPE = False
@@ -168,6 +169,25 @@ try:
 
 except (ImportError, AttributeError):
     pass
+
+# ── Deprecation ───────────────────────────────────────────────────────────────
+
+def _warn_deprecated(old: str, new: str) -> None:
+    """
+    Point a caller at the depth_* name for an old ToF-era one.
+
+    Left to the warnings module to deduplicate: its default filter shows a
+    DeprecationWarning once per call site, and hides it entirely outside
+    ``__main__``, so a game that assigns ``tof_simulated`` in its own main
+    module gets exactly one line and the SDK's own imports stay silent.
+    """
+    warnings.warn(
+        f"VisionPipeline.{old} is deprecated; use VisionPipeline.{new} instead. "
+        f'The "ToF" names describe a time-of-flight sensor this engine never had.',
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
 
 # ── Gesture detection constants ───────────────────────────────────────────────
 # Pinch
@@ -412,7 +432,7 @@ class VisionPipeline(threading.Thread):
         self.smooth_alpha  = smooth_alpha
         self.movement_magnification = movement_magnification
         self.noise_filter  = PipelineNoiseFilter(noise_duration=noise_duration)
-        self.tof_stabilizer = ToFStabilizer()
+        self.tof_stabilizer = DepthStabilizer()
 
         # Underexposure gate. MediaPipe stops returning a hand well before a
         # room looks dark to a person, and a dropout is indistinguishable
@@ -823,7 +843,7 @@ class VisionPipeline(threading.Thread):
 
                 # ── ToF Stabilizer: draw warning overlay during calibration ──────
                 if (
-                    self.tof_stabilizer.state == ToFStabilizer.STATE_SAMPLING
+                    self.tof_stabilizer.state == DepthStabilizer.STATE_SAMPLING
                     and payload is not None
                     and "frame" in payload
                     and payload["frame"] is not None
@@ -1264,7 +1284,7 @@ class VisionPipeline(threading.Thread):
             index_pos[0], index_pos[1], z_val)
 
         # Feed raw sample to calibrator during sampling window
-        if self.tof_stabilizer.state == ToFStabilizer.STATE_SAMPLING:
+        if self.tof_stabilizer.state == DepthStabilizer.STATE_SAMPLING:
             self.tof_stabilizer.feed(depth_raw_m)
 
         # Gate ambient vibration out of Z (no-op when inactive)
@@ -1500,33 +1520,46 @@ class VisionPipeline(threading.Thread):
     # canonical names are depth_*, but six games and their HUDs read the old
     # ones, so they stay as aliases rather than breaking every consumer at
     # once. They are settable because games assign tof_simulated directly.
+    #
+    # Each now warns. The payload KEYS deliberately do not: they are the
+    # schema every game indexes blind, and a warning there would fire once per
+    # frame with nothing a player could do about it. Attributes and methods
+    # are written by hand at a handful of call sites, which is exactly where a
+    # warning can be acted on.
 
     @property
     def tof_active(self) -> bool:
+        _warn_deprecated("tof_active", "depth_active")
         return self.depth_active
 
     @tof_active.setter
     def tof_active(self, value: bool) -> None:
+        _warn_deprecated("tof_active", "depth_active")
         self.depth_active = bool(value)
 
     @property
     def tof_simulated(self) -> bool:
+        _warn_deprecated("tof_simulated", "depth_simulated")
         return self.depth_simulated
 
     @tof_simulated.setter
     def tof_simulated(self, value: bool) -> None:
+        _warn_deprecated("tof_simulated", "depth_simulated")
         self.depth_simulated = bool(value)
 
     @property
     def tof_device_name(self) -> str:
+        _warn_deprecated("tof_device_name", "depth_device_name")
         return self.depth_device_name
 
     @tof_device_name.setter
     def tof_device_name(self, value: str) -> None:
+        _warn_deprecated("tof_device_name", "depth_device_name")
         self.depth_device_name = str(value)
 
     def sample_tof_depth(self, px: int, py: int, lm_z: float = 0.0):
         """Deprecated alias of `sample_depth`."""
+        _warn_deprecated("sample_tof_depth()", "sample_depth()")
         return self.sample_depth(px, py, lm_z)
 
     # ── Z-push click algorithm ────────────────────────────────────────────────

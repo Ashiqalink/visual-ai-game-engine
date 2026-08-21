@@ -272,21 +272,21 @@ class TestPipelineConsumesDepth:
     def test_defaults_to_no_depth_source(self):
         pipe = self._pipeline()
         assert pipe.depth_stream is None
-        assert pipe.tof_active is False
+        assert pipe.depth_active is False
 
     def test_sampling_falls_back_without_a_sensor(self):
         pipe = self._pipeline()
-        pipe.tof_simulated = True
-        active, z_m, label = pipe.sample_tof_depth(32, 24, lm_z=0.0)
+        pipe.depth_simulated = True
+        active, z_m, label = pipe.sample_depth(32, 24, lm_z=0.0)
         assert active is True
         assert label == "Simulated depth (no sensor)"
         assert z_m == pytest.approx(0.45, abs=0.01)
 
     def test_sampling_reads_the_depth_map_when_there_is_one(self):
         pipe = self._pipeline()
-        pipe.tof_active = True
+        pipe.depth_active = True
         pipe.depth_map = np.full((48, 64), 1800, dtype=np.uint16)
-        active, z_m, label = pipe.sample_tof_depth(32, 24)
+        active, z_m, label = pipe.sample_depth(32, 24)
         assert active is True
         assert z_m == pytest.approx(1.8, abs=0.001)
         assert label.startswith("Depth sensor")
@@ -295,12 +295,12 @@ class TestPipelineConsumesDepth:
         # The sensor is 320x240 while the frame is 64x48: the fingertip pixel
         # has to be rescaled, or the sample lands somewhere else entirely.
         pipe = self._pipeline()
-        pipe.tof_active = True
+        pipe.depth_active = True
         depth = np.full((240, 320), 3000, dtype=np.uint16)
         depth[100:140, 140:180] = 700           # a near patch, mid-sensor
         pipe.depth_map = depth
-        _, near, _ = pipe.sample_tof_depth(32, 24)     # frame centre
-        _, far, _ = pipe.sample_tof_depth(2, 2)        # frame corner
+        _, near, _ = pipe.sample_depth(32, 24)     # frame centre
+        _, far, _ = pipe.sample_depth(2, 2)        # frame corner
         assert near == pytest.approx(0.7, abs=0.05)
         assert far == pytest.approx(3.0, abs=0.05)
 
@@ -308,18 +308,18 @@ class TestPipelineConsumesDepth:
         # Zeros are holes, not "0 m". Averaging them in would drag a fingertip
         # reading toward the camera exactly at the edges where holes cluster.
         pipe = self._pipeline()
-        pipe.tof_active = True
+        pipe.depth_active = True
         depth = np.zeros((48, 64), dtype=np.uint16)
         depth[24, 32] = 1200
         pipe.depth_map = depth
-        _, z_m, _ = pipe.sample_tof_depth(32, 24)
+        _, z_m, _ = pipe.sample_depth(32, 24)
         assert z_m == pytest.approx(1.2, abs=0.001)
 
     def test_all_holes_falls_back_rather_than_reporting_zero(self):
         pipe = self._pipeline()
-        pipe.tof_active = True
+        pipe.depth_active = True
         pipe.depth_map = np.zeros((48, 64), dtype=np.uint16)
-        _, z_m, _ = pipe.sample_tof_depth(32, 24, lm_z=0.0)
+        _, z_m, _ = pipe.sample_depth(32, 24, lm_z=0.0)
         assert z_m > 0.15, "a hole must not read as touching the lens"
 
     def test_depth_grid_uses_the_sensor_when_present(self):
@@ -334,4 +334,4 @@ class TestPipelineConsumesDepth:
         pipe = self._pipeline(depth_source="synthetic")
         assert pipe.depth_source_spec == "synthetic"
         # Opening happens in the thread; the label contract is what matters.
-        assert pipe.tof_active is False
+        assert pipe.depth_active is False
