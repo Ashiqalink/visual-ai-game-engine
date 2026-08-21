@@ -114,7 +114,9 @@ setup(
     ext_modules=ext_modules,
     cmdclass={"build_ext": build_ext},
     zip_safe=False,
-    python_requires=">=3.8,<3.13",
+    # Keep in step with pyproject.toml: 3.10 floor (PEP-604 signatures
+    # evaluated at def time), 3.12 ceiling (mediapipe wheels).
+    python_requires=">=3.10,<3.13",
     install_requires=[
         "numpy>=1.20.0",
         "opencv-python>=4.8.0",

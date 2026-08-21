@@ -7,10 +7,13 @@ name = "visual_ai"
 version = "0.3.0"
 description = "High-performance Computer Vision AI tracking and physics library for game developers"
 readme = "README.md"
-# Upper bound is mediapipe's, not ours: it publishes no wheels for 3.13+, so a
-# 3.13 interpreter fails at dependency resolution with a message that says
-# nothing about why. Cap it here so pip reports the real constraint instead.
-requires-python = ">=3.8,<3.13"
+# The floor is ours: pipeline.py and jitter_analyzer.py use PEP-604 unions in
+# function signatures evaluated at def time, so the package raises TypeError on
+# import under 3.9 - the old ">=3.8" was a promise the code stopped keeping.
+# The ceiling is mediapipe's: it publishes no wheels for 3.13+, so a 3.13
+# interpreter fails at dependency resolution with a message that says nothing
+# about why. State both here so pip reports the real constraints.
+requires-python = ">=3.10,<3.13"
 license = { text = "Proprietary" }
 authors = [
     { name = "Ashiqalink" }
@@ -35,8 +38,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/user/visual_ai_game_engine"
-Documentation = "https://github.com/user/visual_ai_game_engine/tree/main/docs"
+Homepage = "https://github.com/Ashiqalink/visual-ai-game-engine"
+Documentation = "https://github.com/Ashiqalink/visual-ai-game-engine/tree/main/docs"
 
 [tool.setuptools.packages.find]
 where = ["src"]
