@@ -1,3 +1,21 @@
+"""
+Pure-Python mirror of the C++ core in ``src/engine.cpp``.
+
+`visual_ai.GameEngine` is whichever of the two loaded: `engine_core` when a
+compiled .pyd sits next to the package, this module otherwise. Consumers never
+branch on it, so anything a game can observe must behave identically on both -
+same physics constants, same integration order, even the same sqrt (E7 kept
+`math.sqrt` over `math.hypot` here because `engine.cpp` uses
+``std::sqrt(dx*dx+dy*dy)`` and bit-parity is what makes the fallback safe to
+swap in).
+
+**Any physics change must be mirrored in ``src/engine.cpp`` and the extension
+rebuilt** (`python setup.py build_ext --inplace`), then checked with
+``tests/test_engine_parity.py``, which runs every assertion against both
+engines. The known, accepted drift is cosmetic: debris-spawn RNG (C++
+quantized in 0.02 steps vs Python continuous).
+"""
+
 import math
 import random
 from dataclasses import dataclass, field
