@@ -54,7 +54,7 @@ class TestPayloadContract(unittest.TestCase):
 
     def setUp(self):
         self.p = _pipeline()
-        self.p.tof_simulated = True
+        self.p.depth_simulated = True
 
     def test_no_hand_payload_has_every_emitted_key(self):
         gesture = self.p._extract_gesture(_hand())
@@ -124,11 +124,11 @@ class TestToFSampling(unittest.TestCase):
 
     def setUp(self):
         self.p = _pipeline(width=320, height=240)
-        self.p.tof_simulated = True
+        self.p.depth_simulated = True
 
     def test_no_tof_source_reports_inactive(self):
         p = _pipeline()
-        active, z, src = p.sample_tof_depth(100, 100, 0.0)
+        active, z, src = p.sample_depth(100, 100, 0.0)
         self.assertFalse(active)
         self.assertEqual(z, 0.0)
 
@@ -137,13 +137,13 @@ class TestToFSampling(unittest.TestCase):
         self.p.depth_map = np.full((60, 80), 500, dtype=np.uint16)
         for px, py in ((0, 0), (160, 120), (319, 239)):
             with self.subTest(px=px, py=py):
-                active, z, _ = self.p.sample_tof_depth(px, py, 0.0)
+                active, z, _ = self.p.sample_depth(px, py, 0.0)
                 self.assertTrue(active)
                 self.assertAlmostEqual(z, 0.5, delta=0.01)
 
     def test_out_of_range_pixels_are_clamped(self):
         self.p.depth_map = np.full((60, 80), 700, dtype=np.uint16)
-        active, z, _ = self.p.sample_tof_depth(9999, -50, 0.0)
+        active, z, _ = self.p.sample_depth(9999, -50, 0.0)
         self.assertTrue(active)
         self.assertAlmostEqual(z, 0.7, delta=0.01)
 
@@ -151,18 +151,18 @@ class TestToFSampling(unittest.TestCase):
         """A single zero-return pixel must not poison the reading."""
         self.p.depth_map = np.full((60, 80), 400, dtype=np.uint16)
         self.p.depth_map[28:32, 38:42] = 0
-        active, z, _ = self.p.sample_tof_depth(160, 120, 0.0)
+        active, z, _ = self.p.sample_depth(160, 120, 0.0)
         self.assertAlmostEqual(z, 0.4, delta=0.01)
 
     def test_all_zero_patch_falls_back_to_estimate(self):
         self.p.depth_map = np.zeros((60, 80), dtype=np.uint16)
-        active, z, _ = self.p.sample_tof_depth(160, 120, 0.0)
+        active, z, _ = self.p.sample_depth(160, 120, 0.0)
         self.assertTrue(active)
         self.assertGreater(z, 0.15)
 
     def test_simulated_depth_tracks_landmark_z(self):
-        near = self.p.sample_tof_depth(160, 120, -0.15)[1]
-        far = self.p.sample_tof_depth(160, 120, 0.15)[1]
+        near = self.p.sample_depth(160, 120, -0.15)[1]
+        far = self.p.sample_depth(160, 120, 0.15)[1]
         self.assertLess(near, far)
 
 
@@ -170,14 +170,14 @@ class TestZPushClick(unittest.TestCase):
 
     def test_disabled_by_default(self):
         p = _pipeline()
-        p.tof_simulated = True
+        p.depth_simulated = True
         for i in range(40):
             g = p._extract_gesture(_hand(jitter=0.0, push=0.10 if i > 20 else 0.0))
             self.assertEqual(g["z_delta"], 0.0)
 
     def test_opt_in_detects_a_push(self):
         p = _pipeline(enable_z_click=True)
-        p.tof_simulated = True
+        p.depth_simulated = True
         fired = 0
         for i in range(30):
             push = 0.0 if i < 14 else 0.12 * (i - 13) / 6.0
@@ -191,7 +191,7 @@ class TestZPushClick(unittest.TestCase):
         lateral-movement guard let swipes through as clicks.
         """
         p = _pipeline(enable_z_click=True)
-        p.tof_simulated = True
+        p.depth_simulated = True
         fired = 0
         for i in range(40):
             # Sweep sideways hard while also pushing forward.
@@ -206,7 +206,7 @@ class TestStabilizationWiring(unittest.TestCase):
 
     def test_tick_is_reachable_without_a_hand(self):
         p = _pipeline()
-        p.tof_simulated = True
+        p.depth_simulated = True
         p.begin_stabilization(duration=1.0)
         self.assertEqual(p.tof_stabilizer.state, "sampling")
         p.cancel_stabilization()
@@ -215,7 +215,7 @@ class TestStabilizationWiring(unittest.TestCase):
     def test_push_survives_calibration(self):
         import time
         p = _pipeline()
-        p.tof_simulated = True
+        p.depth_simulated = True
         p.begin_stabilization(duration=1.0)
         i = 0
         while p.tof_stabilizer.state == "sampling":
@@ -234,7 +234,7 @@ class TestStabilizationWiring(unittest.TestCase):
 
     def test_gate_is_exposed_in_the_payload(self):
         p = _pipeline()
-        p.tof_simulated = True
+        p.depth_simulated = True
         self.assertIn("stabilizer_gate", p._empty_gesture())
         self.assertIn("stabilizer_gate", p._extract_gesture(_hand()))
 
@@ -254,7 +254,7 @@ class TestFilterTuning(unittest.TestCase):
 
     def test_gesture_reset_clears_filter_state(self):
         p = _pipeline()
-        p.tof_simulated = True
+        p.depth_simulated = True
         for i in range(10):
             p._extract_gesture(_hand(phase=i * 0.2))
         self.assertTrue(p._gs.smoothed)
@@ -290,7 +290,7 @@ class TestCalibrationOverlayCache(unittest.TestCase):
 
     def test_overlay_covers_the_whole_frame_at_any_size(self):
         p = _pipeline()
-        p.tof_simulated = True
+        p.depth_simulated = True
         for h, w in ((480, 640), (720, 1280), (480, 640)):
             frame = np.zeros((h, w, 3), dtype=np.uint8)
             out = p._draw_stabilizer_warning(frame, 0.5)

@@ -1,10 +1,10 @@
-"""Depth producers for the ToF path.
+"""Depth producers.
 
-The pipeline has always been able to *consume* depth: `sample_tof_depth`
+The pipeline has always been able to *consume* depth: `sample_depth`
 medians a patch around the fingertip, rescales sensor pixels into RGB frame
 space, and rejects no-return zeros; `_build_depth_grid` resizes a whole depth
 map into the payload. What never existed was anything that produced one.
-`tof_active` and `depth_map` were assigned in `__init__` and nowhere else, so
+`depth_active` and `depth_map` were assigned in `__init__` and nowhere else, so
 the "ToF IR Hardware" branch was unreachable and every depth number in every
 payload came from `0.45 + lm_z * 0.6` -- a MediaPipe landmark wearing a depth
 sensor's label.

@@ -109,7 +109,7 @@ class TestBackwardsCompatibility(unittest.TestCase):
 
     def test_no_hand_payload_still_carries_every_emitted_key(self):
         p = _pipeline()
-        p.tof_simulated = True
+        p.depth_simulated = True
         emitted = set(p._extract_gesture(_hand().landmark))
         empty = set(p._empty_gesture())
         self.assertEqual(emitted - empty, set())
@@ -283,7 +283,7 @@ class TestFingertipMotion(unittest.TestCase):
 
     def test_velocity_points_the_way_the_hand_moves(self):
         p = _pipeline()
-        p.tof_simulated = True
+        p.depth_simulated = True
         gesture = None
         for i in range(30):
             gesture = p._extract_gesture(_hand(cx=0.3 + 0.01 * i).landmark, now=1000.0 + i * _DT)
@@ -293,7 +293,7 @@ class TestFingertipMotion(unittest.TestCase):
 
     def test_a_still_hand_reports_near_zero_speed(self):
         p = _pipeline()
-        p.tof_simulated = True
+        p.depth_simulated = True
         gesture = None
         for i in range(30):
             gesture = p._extract_gesture(_hand(cx=0.5).landmark, now=1000.0 + i * _DT)
@@ -301,7 +301,7 @@ class TestFingertipMotion(unittest.TestCase):
 
     def test_velocity_stays_zero_until_a_second_sample_exists(self):
         p = _pipeline()
-        p.tof_simulated = True
+        p.depth_simulated = True
         first = p._extract_gesture(_hand().landmark, now=1000.0)
         self.assertEqual(first["index_velocity"], (0.0, 0.0))
 
@@ -313,7 +313,7 @@ class TestFingertipMotion(unittest.TestCase):
         velocity recovers to 80% of the true magnitude).
         """
         p = _pipeline(filter_beta=beta)
-        p.tof_simulated = True
+        p.depth_simulated = True
         at_reversal, recovered = None, None
         for i in range(40):
             cx = 0.3 + 0.015 * i if i < 20 else 0.6 - 0.015 * (i - 20)
@@ -402,7 +402,7 @@ class TestDepthGrid(unittest.TestCase):
         p = _pipeline(max_hands=1)
         p._mp_face = None
         p.emit_depth_grid = True
-        p.tof_simulated = True
+        p.depth_simulated = True
         p._mp_hands = _FakeHands([_HandResults([_hand(cx=0.5, cy=0.5)])])
         grid = p._process_frame(_frame())["depth_grid"]
         self.assertLess(float(grid.min()), float(grid.max()))

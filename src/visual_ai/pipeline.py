@@ -122,6 +122,7 @@ import math
 import queue
 import threading
 import time
+import warnings
 
 import cv2
 import numpy as np
@@ -168,6 +169,25 @@ try:
 
 except (ImportError, AttributeError):
     pass
+
+# ── Deprecation ───────────────────────────────────────────────────────────────
+
+def _warn_deprecated(old: str, new: str) -> None:
+    """
+    Point a caller at the depth_* name for an old ToF-era one.
+
+    Left to the warnings module to deduplicate: its default filter shows a
+    DeprecationWarning once per call site, and hides it entirely outside
+    ``__main__``, so a game that assigns ``tof_simulated`` in its own main
+    module gets exactly one line and the SDK's own imports stay silent.
+    """
+    warnings.warn(
+        f"VisionPipeline.{old} is deprecated; use VisionPipeline.{new} instead. "
+        f'The "ToF" names describe a time-of-flight sensor this engine never had.',
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
 
 # ── Gesture detection constants ───────────────────────────────────────────────
 # Pinch
@@ -1500,33 +1520,46 @@ class VisionPipeline(threading.Thread):
     # canonical names are depth_*, but six games and their HUDs read the old
     # ones, so they stay as aliases rather than breaking every consumer at
     # once. They are settable because games assign tof_simulated directly.
+    #
+    # Each now warns. The payload KEYS deliberately do not: they are the
+    # schema every game indexes blind, and a warning there would fire once per
+    # frame with nothing a player could do about it. Attributes and methods
+    # are written by hand at a handful of call sites, which is exactly where a
+    # warning can be acted on.
 
     @property
     def tof_active(self) -> bool:
+        _warn_deprecated("tof_active", "depth_active")
         return self.depth_active
 
     @tof_active.setter
     def tof_active(self, value: bool) -> None:
+        _warn_deprecated("tof_active", "depth_active")
         self.depth_active = bool(value)
 
     @property
     def tof_simulated(self) -> bool:
+        _warn_deprecated("tof_simulated", "depth_simulated")
         return self.depth_simulated
 
     @tof_simulated.setter
     def tof_simulated(self, value: bool) -> None:
+        _warn_deprecated("tof_simulated", "depth_simulated")
         self.depth_simulated = bool(value)
 
     @property
     def tof_device_name(self) -> str:
+        _warn_deprecated("tof_device_name", "depth_device_name")
         return self.depth_device_name
 
     @tof_device_name.setter
     def tof_device_name(self, value: str) -> None:
+        _warn_deprecated("tof_device_name", "depth_device_name")
         self.depth_device_name = str(value)
 
     def sample_tof_depth(self, px: int, py: int, lm_z: float = 0.0):
         """Deprecated alias of `sample_depth`."""
+        _warn_deprecated("sample_tof_depth()", "sample_depth()")
         return self.sample_depth(px, py, lm_z)
 
     # ── Z-push click algorithm ────────────────────────────────────────────────

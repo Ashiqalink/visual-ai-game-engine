@@ -8,6 +8,7 @@ move over, and these tests are what says so out loud.
 import importlib
 import queue
 import sys
+import warnings
 
 import numpy as np
 import pytest
@@ -47,24 +48,58 @@ class TestPayloadAliases:
 class TestAttributeAliases:
     def test_reading_through_the_old_names(self):
         pipe = a_pipeline()
-        assert pipe.tof_active is pipe.depth_active
-        assert pipe.tof_simulated is pipe.depth_simulated
-        assert pipe.tof_device_name == pipe.depth_device_name
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            assert pipe.tof_active is pipe.depth_active
+            assert pipe.tof_simulated is pipe.depth_simulated
+            assert pipe.tof_device_name == pipe.depth_device_name
 
     def test_writing_through_the_old_names(self):
         # flappy and labkit both assign pipeline.tof_simulated directly.
         pipe = a_pipeline()
-        pipe.tof_simulated = True
-        assert pipe.depth_simulated is True
-        pipe.tof_active = True
-        assert pipe.depth_active is True
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            pipe.tof_simulated = True
+            assert pipe.depth_simulated is True
+            pipe.tof_active = True
+            assert pipe.depth_active is True
 
     def test_sample_tof_depth_still_dispatches(self):
         pipe = a_pipeline()
         pipe.depth_simulated = True
-        old = pipe.sample_tof_depth(32, 24, 0.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            old = pipe.sample_tof_depth(32, 24, 0.0)
         new = pipe.sample_depth(32, 24, 0.0)
         assert old == new
+
+
+class TestTheOldNamesWarn:
+    """A deprecation nobody is told about is just a rename waiting to break."""
+
+    def test_reading_an_alias_warns(self):
+        pipe = a_pipeline()
+        with pytest.warns(DeprecationWarning, match="depth_active"):
+            _ = pipe.tof_active
+
+    def test_assigning_an_alias_warns(self):
+        pipe = a_pipeline()
+        with pytest.warns(DeprecationWarning, match="depth_simulated"):
+            pipe.tof_simulated = True
+
+    def test_the_deprecated_method_warns(self):
+        pipe = a_pipeline()
+        with pytest.warns(DeprecationWarning, match="sample_depth"):
+            pipe.sample_tof_depth(32, 24)
+
+    def test_the_payload_keys_do_not_warn(self):
+        # Games index these every frame; a per-frame warning would be noise
+        # with nothing a player could do about it.
+        pipe = a_pipeline()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            payload = pipe._empty_payload(0.0, 0.0, np.zeros((48, 64, 3), np.uint8))
+            assert payload["tof_z_m"] == payload["depth_m"]
 
     def test_stabilizer_alias(self):
         assert ToFStabilizer is DepthStabilizer

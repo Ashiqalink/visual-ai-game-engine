@@ -178,9 +178,9 @@ def draw_panel(panel, payload, fps, recorder):
     y += 6
 
     line("depth_source", payload["depth_source"])
-    line("tof_active", payload["tof_active"],
-         GREEN if payload["tof_active"] else GREY)
-    line("tof_z", f'{payload["tof_z_m"]:.3f} m  (raw {payload["tof_z_raw"]:.3f})')
+    line("depth_active", payload["depth_active"],
+         GREEN if payload["depth_active"] else GREY)
+    line("depth_m", f'{payload["depth_m"]:.3f} m  (raw {payload["depth_m_raw"]:.3f})')
     line("stabilizer", f'{payload["stabilizer_state"]} '
                        f'{payload["stabilizer_progress"] * 100:.0f}%')
     y += 6
