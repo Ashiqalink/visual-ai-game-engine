@@ -40,3 +40,22 @@ Documentation = "https://github.com/user/visual_ai_game_engine/tree/main/docs"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+# The rule set the code already mostly follows, written down so drift gets
+# caught at edit time instead of re-audited later. Fix violations rather than
+# widening the ignores; anything deliberately exempt is a targeted noqa with a
+# reason at the site.
+line-length = 100
+extend-exclude = ["build", "game_env", "cpp"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# __init__ builds the dual-engine surface: the C++ probe and the fallback
+# binding have to run before the re-exports that depend on which one loaded.
+"src/visual_ai/__init__.py" = ["E402"]
+# Inserts its sys.path before importing the package, the same way the games'
+# engine_bootstrap does.
+"tests/test_3d_character_options.py" = ["E402"]
