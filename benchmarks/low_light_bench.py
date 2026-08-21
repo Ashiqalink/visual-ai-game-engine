@@ -19,19 +19,19 @@ on what the boost recovers, and the ordering between conditions as the point.
 Exit code is 0 if the boost never made a condition worse.
 """
 
+import argparse
 import os
 import sys
 import time
-import argparse
 
-import numpy as np
 import cv2
+import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "src"))
 
-from visual_ai.capture import default_backend                 # noqa: E402
-from visual_ai.low_light import LowLightBoost, measure_luma   # noqa: E402
+from visual_ai.capture import default_backend  # noqa: E402
+from visual_ai.low_light import LowLightBoost, measure_luma  # noqa: E402
 
 DIM_FACTORS = (1.0, 0.5, 0.35, 0.22, 0.14, 0.09)
 

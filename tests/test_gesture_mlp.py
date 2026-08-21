@@ -8,7 +8,7 @@ import unittest
 
 import numpy as np
 
-from visual_ai.gesture_mlp import GestureMLP, landmarks_to_features, NUM_FEATURES, NUM_LANDMARKS
+from visual_ai.gesture_mlp import NUM_FEATURES, NUM_LANDMARKS, GestureMLP, landmarks_to_features
 
 
 class _FakeLandmark:

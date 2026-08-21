@@ -56,7 +56,7 @@ __all__ = [
     "blit_sprite",
     "blit_ellipse_alpha",
     "invalidate_sprite_cache",
-    "REMBG_AVAILABLE",
+    "REMBG_AVAILABLE",  # noqa: F822 - served by the module __getattr__ below
 ]
 
 BackgroundMode = Literal["auto", "chroma", "rembg", "none"]
@@ -541,7 +541,6 @@ def bleed_edges(image: np.ndarray, iterations: int = 6) -> np.ndarray:
     Each pass averages the neighbouring known colours, weighted by how many
     neighbours are known, then marks the filled ring as known for the next one.
     """
-    cv2 = _cv2()
     rgba = to_rgba(image)
     colour, _ = _propagate_colour(rgba[..., :3], (rgba[..., 3] > 0).astype(np.float32),
                                   iterations)

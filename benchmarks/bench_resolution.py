@@ -34,8 +34,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from harness import BenchResult, Scenario  # noqa: E402
 import metrics  # noqa: E402
+from harness import BenchResult, Scenario  # noqa: E402
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "hand_motion.mp4"
 INDEX_FINGERTIP = 8  # MediaPipe Hands landmark id
@@ -165,8 +165,6 @@ def run() -> BenchResult:
     )
 
     frames = _load_frames()
-    native_w = frames[0].shape[1]
-    native_h = frames[0].shape[0]
 
     runs = {label: _run_config(frames, width, skip)
             for label, width, skip in _CONFIGS}

@@ -126,17 +126,17 @@ import time
 import cv2
 import numpy as np
 
+from visual_ai.depth_source import DepthStream, open_depth_source
+from visual_ai.gesture_math import get_landmark_velocity
+from visual_ai.gesture_mlp import GestureMLP, landmarks_to_features
+from visual_ai.jitter_analyzer import JitterAnalyzer
+from visual_ai.low_light import LowLightBoost
 from visual_ai.noise_filter import (
     OneEuroFilter,
     PipelineNoiseFilter,
     ema_alpha_to_cutoff,
 )
-from visual_ai.jitter_analyzer import JitterAnalyzer
-from visual_ai.depth_source import DepthStream, open_depth_source
-from visual_ai.low_light import LowLightBoost
 from visual_ai.tof_stabilizer import ToFStabilizer
-from visual_ai.gesture_mlp import GestureMLP, landmarks_to_features
-from visual_ai.gesture_math import get_landmark_velocity
 
 # ── Optional MediaPipe imports ────────────────────────────────────────────────
 HAS_MEDIAPIPE = False
@@ -144,7 +144,7 @@ mp_face_detection_module = None
 mp_hands_module = None
 
 try:
-    import mediapipe as mp
+    import mediapipe as mp  # noqa: F401 - availability probe; used via the names below
 
     # Face detection
     try:
@@ -1488,7 +1488,7 @@ class VisionPipeline(threading.Thread):
         # Say what it is. The old labels said "ToF Hardware" for a number
         # computed from a MediaPipe landmark, which is how everyone came to
         # believe this engine had a depth sensor in it.
-        src_label = ("Depth sensor (%s)" % self.depth_device_name
+        src_label = (f"Depth sensor ({self.depth_device_name})"
                      if self.depth_active else "Simulated depth (no sensor)")
         return True, z_m, src_label
 

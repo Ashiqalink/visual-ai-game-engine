@@ -24,16 +24,15 @@ calibration window completes in microseconds and results are reproducible.
 
 from __future__ import annotations
 
-import numpy as np
-
-from harness import BenchResult, Scenario, bootstrap, fake_clock, quiet
 import metrics
+import numpy as np
 import signals
+from harness import BenchResult, Scenario, bootstrap, fake_clock, quiet
 
 _MODULES = bootstrap()
 
-import visual_ai.tof_stabilizer as tof_mod            # noqa: E402
-from visual_ai.tof_stabilizer import ToFStabilizer    # noqa: E402
+import visual_ai.tof_stabilizer as tof_mod  # noqa: E402
+from visual_ai.tof_stabilizer import ToFStabilizer  # noqa: E402
 
 FPS = signals.FPS
 DT = signals.DT

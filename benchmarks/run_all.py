@@ -22,7 +22,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from harness import (  # noqa: E402
-    bold, bootstrap, cyan, dim, green, header, print_scenarios, print_tables, red,
+    bold,
+    bootstrap,
+    cyan,
+    dim,
+    green,
+    header,
+    print_scenarios,
+    print_tables,
+    red,
 )
 
 BENCH_DIR = Path(__file__).resolve().parent

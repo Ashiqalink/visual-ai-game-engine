@@ -3,11 +3,12 @@
 """
 
 import math
-import numpy as np
+from dataclasses import dataclass
+
 import cv2
-from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Dict, Any
-from visual_ai.material import Material, ShaderType
+import numpy as np
+
+from visual_ai.material import Material
 
 
 @dataclass
@@ -83,9 +84,9 @@ class Camera3D:
         aspect_ratio: float = 4.0 / 3.0,
         near: float = 0.1,
         far: float = 1000.0,
-        position: Tuple[float, float, float] = (0.0, 0.0, 500.0),
-        target: Tuple[float, float, float] = (0.0, 0.0, 0.0),
-        up: Tuple[float, float, float] = (0.0, 1.0, 0.0),
+        position: tuple[float, float, float] = (0.0, 0.0, 500.0),
+        target: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        up: tuple[float, float, float] = (0.0, 1.0, 0.0),
         screen_width: float = 800.0,
         screen_height: float = 600.0,
     ):
@@ -102,7 +103,7 @@ class Camera3D:
         # Focal distance factor derived from FOV
         self.focal_length = (self.screen_width / 2.0) / math.tan(math.radians(self.fov / 2.0))
 
-    def project_point(self, point: Tuple[float, float, float]) -> Optional[Tuple[int, int, float]]:
+    def project_point(self, point: tuple[float, float, float]) -> tuple[int, int, float] | None:
         """
         Project a single 3D world point (x, y, z) into 2D screen coordinates (px_x, px_y, z_depth).
         Returns None if behind camera near plane.
@@ -123,7 +124,7 @@ class Camera3D:
 
         return (int(round(screen_x)), int(round(screen_y)), rel_z)
 
-    def project_points(self, points: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def project_points(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Project array of N x 3 points.
         Returns (screen_coords [N x 2], depths [N], valid_mask [N])
@@ -159,8 +160,8 @@ class Mesh3D:
     3D Geometry representation holding vertices, faces, and normals.
     """
     vertices: np.ndarray  # N x 3 float64
-    faces: List[List[int]]  # List of face vertex index lists
-    normals: Optional[np.ndarray] = None  # Face or vertex normals
+    faces: list[list[int]]  # List of face vertex index lists
+    normals: np.ndarray | None = None  # Face or vertex normals
 
     @classmethod
     def create_cube(cls, size: float = 50.0) -> "Mesh3D":
@@ -401,7 +402,7 @@ class Renderer3D:
     """
     Software 3D Mesh Renderer for drawing depth-sorted shaded 3D primitives onto OpenCV image frames.
     """
-    def __init__(self, camera: Optional[Camera3D] = None, light_angle_deg: float = 45.0, ambient_intensity: float = 0.45, light_intensity: float = 0.85):
+    def __init__(self, camera: Camera3D | None = None, light_angle_deg: float = 45.0, ambient_intensity: float = 0.45, light_intensity: float = 0.85):
         self.camera = camera if camera is not None else Camera3D()
         self.ambient_intensity = ambient_intensity
         self.light_intensity = light_intensity
@@ -421,7 +422,7 @@ class Renderer3D:
         frame: np.ndarray,
         mesh: Mesh3D,
         transform: Transform3D,
-        material: Optional[Material] = None,
+        material: Material | None = None,
         wireframe: bool = False,
     ) -> np.ndarray:
         """

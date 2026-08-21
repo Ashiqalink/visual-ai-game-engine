@@ -25,11 +25,10 @@ place.
 
 from __future__ import annotations
 
-import numpy as np
-
-from harness import BenchResult, Scenario, bootstrap
 import metrics
+import numpy as np
 import signals
+from harness import BenchResult, Scenario, bootstrap
 
 _MODULES = bootstrap()
 
@@ -251,12 +250,13 @@ def run() -> BenchResult:
         # Which alternative tuning, if any, clearly beats the shipped one here.
         # Reported as context, never as a failure: a tuning that wins one
         # scenario usually loses another, which is the whole point of the table.
-        rivals = {l: s for l, s in scored.items() if l not in ("raw", SHIPPED_LABEL)}
+        rivals = {label: s for label, s in scored.items()
+                  if label not in ("raw", SHIPPED_LABEL)}
 
         for name, key, bounds, unit in spec["requirements"]:
             detail = ""
             if rivals and key in _LOWER_IS_BETTER:
-                winner = min(rivals, key=lambda l: rivals[l][key])
+                winner = min(rivals, key=lambda label: rivals[label][key])
                 if rivals[winner][key] < shipped[key] * 0.9:
                     detail = f"{winner} scores {rivals[winner][key]:,.4g} here"
             scen.check(name, shipped[key], unit, detail=detail, **bounds)

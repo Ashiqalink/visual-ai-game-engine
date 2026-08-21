@@ -15,17 +15,17 @@ resolution, which is exactly what the synthetic source cannot imitate and what
 the ToF consumer code most needs to be tested against.
 """
 
+import argparse
 import os
 import sys
 import time
-import argparse
 
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "src"))
 
-from visual_ai.depth_source import (          # noqa: E402
+from visual_ai.depth_source import (  # noqa: E402
     DepthRecorder,
     open_depth_source,
     probe_depth_sources,

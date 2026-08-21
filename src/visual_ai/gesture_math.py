@@ -6,13 +6,12 @@ so game code can evaluate gesture properties without manual coordinate math.
 """
 
 import math
-from typing import List, Tuple, Dict, Any, Union
+from typing import Any, Union
+
+Point2D = Union[tuple[float, float], dict[str, float], Any]
 
 
-Point2D = Union[Tuple[float, float], Dict[str, float], Any]
-
-
-def _extract_xy(pt: Point2D) -> Tuple[float, float]:
+def _extract_xy(pt: Point2D) -> tuple[float, float]:
     """Helper to extract (x, y) coordinates from tuple, dict, or MediaPipe landmark object."""
     if isinstance(pt, (tuple, list)):
         return (float(pt[0]), float(pt[1]))
@@ -56,7 +55,7 @@ def get_finger_angle(joint_a: Point2D, joint_b: Point2D, joint_c: Point2D) -> fl
     return math.degrees(math.acos(cos_theta))
 
 
-def get_hand_center_and_radius(landmarks: List[Point2D]) -> Tuple[Tuple[float, float], float]:
+def get_hand_center_and_radius(landmarks: list[Point2D]) -> tuple[tuple[float, float], float]:
     """
     Calculate hand palm center (average position) and bounding radius.
     Returns ((cx, cy), radius).
@@ -89,7 +88,7 @@ def get_hand_center_and_radius(landmarks: List[Point2D]) -> Tuple[Tuple[float, f
 
 def get_landmark_velocity(
     prev_pt: Point2D, curr_pt: Point2D, dt: float
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """Calculate instantaneous velocity vector (vx, vy) for a landmark point over dt seconds."""
     if dt < 1e-9:
         return (0.0, 0.0)

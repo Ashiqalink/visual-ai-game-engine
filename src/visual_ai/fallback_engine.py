@@ -1,7 +1,8 @@
 import math
-from dataclasses import dataclass, field
 import random
-from typing import List, Optional, Any
+from dataclasses import dataclass, field
+from typing import Any
+
 from visual_ai.material import Material
 
 
@@ -27,7 +28,7 @@ class Entity:
     depth: float = 1.0
     active: bool = True
     material: Material = field(default_factory=Material)
-    mesh: Optional[Any] = None
+    mesh: Any | None = None
 
 
 
@@ -58,7 +59,7 @@ class Debris:
     material: Material = field(default_factory=Material)
 
 
-def _coerce_material(material: Optional[Material]) -> Material:
+def _coerce_material(material: Material | None) -> Material:
     """
     Resolve a ``material=`` argument the way the C++ binding does.
 
@@ -92,9 +93,9 @@ class PythonFallbackEngine:
         self.radius = 25.0
         self.target_x = width / 2.0
         self.target_y = height / 2.0
-        self.blocks: List[Block] = []
-        self.debris: List[Debris] = []
-        self.entities: List[Entity] = []
+        self.blocks: list[Block] = []
+        self.debris: list[Debris] = []
+        self.entities: list[Entity] = []
         self._next_entity_id: int = 1
 
     def set_target_position(self, x: float, y: float):
@@ -113,10 +114,10 @@ class PythonFallbackEngine:
         width: float = 1.0,
         height: float = 1.0,
         depth: float = 1.0,
-        material: Optional[Material] = None,
-        w: Optional[float] = None,
-        h: Optional[float] = None,
-        d: Optional[float] = None,
+        material: Material | None = None,
+        w: float | None = None,
+        h: float | None = None,
+        d: float | None = None,
     ) -> Entity:
         """
         Add a general-purpose Entity to the game world.
@@ -170,8 +171,8 @@ class PythonFallbackEngine:
         vry: float = 0.0,
         vrz: float = 0.0,
         scale: float = 1.0,
-        material: Optional[Material] = None,
-        mesh: Optional[Any] = None,
+        material: Material | None = None,
+        mesh: Any | None = None,
     ) -> Entity:
         """Add a 3D Element entity to the engine scene."""
         ent_id = self._next_entity_id
@@ -202,7 +203,7 @@ class PythonFallbackEngine:
         self.entities.append(entity)
         return entity
 
-    def get_entities(self) -> List[Entity]:
+    def get_entities(self) -> list[Entity]:
         """Get all active entities in the engine."""
         return self.entities
 
@@ -210,14 +211,14 @@ class PythonFallbackEngine:
         """Remove all general entities."""
         self.entities.clear()
 
-    def add_block(self, x: float, y: float, w: float, h: float, health: float, material: Optional[Material] = None):
+    def add_block(self, x: float, y: float, w: float, h: float, health: float, material: Material | None = None):
         mat = _coerce_material(material)
         self.blocks.append(Block(x, y, w, h, health, health, True, mat))
 
-    def get_blocks(self) -> List[Block]:
+    def get_blocks(self) -> list[Block]:
         return self.blocks
 
-    def get_debris(self) -> List[Debris]:
+    def get_debris(self) -> list[Debris]:
         return self.debris
 
     def clear_blocks(self):

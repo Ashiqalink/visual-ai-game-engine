@@ -3,21 +3,21 @@ Visual AI Game Engine - Seamless 3D Elements Demo
 Demonstrates rendering, projecting, and interacting with 3D primitives driven by AI gesture tracking.
 """
 
-import time
 import queue
+import time
+
 import cv2
 import numpy as np
 
 from visual_ai import (
-    VisionPipeline,
-    GameEngine,
     CPP_ENGINE_AVAILABLE,
-    Transform3D,
     Camera3D,
+    GameEngine,
+    Material,
     Mesh3D,
     Renderer3D,
-    Material,
-    ShaderType,
+    Transform3D,
+    VisionPipeline,
 )
 
 
@@ -48,7 +48,7 @@ def main():
 
     # 1. Rotating Gold Cube
     gold_mat = Material.preset("gold")
-    cube_ent = engine.add_3d_element(
+    engine.add_3d_element(
         name="GoldCube",
         x=-150.0, y=50.0, z=0.0,
         vrx=30.0, vry=60.0, vrz=15.0,
@@ -59,7 +59,7 @@ def main():
 
     # 2. Emissive Neon Pyramid
     neon_mat = Material.preset("emissive")
-    pyramid_ent = engine.add_3d_element(
+    engine.add_3d_element(
         name="NeonPyramid",
         x=150.0, y=-50.0, z=0.0,
         vrx=45.0, vry=30.0, vrz=0.0,
@@ -70,7 +70,7 @@ def main():
 
     # 3. Smooth Plastic Sphere
     plastic_mat = Material.preset("plastic")
-    sphere_ent = engine.add_3d_element(
+    engine.add_3d_element(
         name="PlasticSphere",
         x=0.0, y=-120.0, z=50.0,
         vrx=20.0, vry=40.0, vrz=0.0,

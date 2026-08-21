@@ -5,12 +5,13 @@ test_noise_filter.py — Unit tests for NoiseFilter, FilteredGestureDetector, an
 import random
 import time
 import unittest
+
 from visual_ai.noise_filter import (
-    NoiseFilter,
     FilteredGestureDetector,
-    PipelineNoiseFilter,
     GenericStreamFilter,
+    NoiseFilter,
     OneEuroFilter,
+    PipelineNoiseFilter,
     ema_alpha_to_cutoff,
 )
 

@@ -238,7 +238,7 @@ class GestureMLP:
         )
 
     @classmethod
-    def load(cls, path) -> "GestureMLP":
+    def load(cls, path) -> GestureMLP:
         data = np.load(path, allow_pickle=False)
         labels = [str(label) for label in data["labels"]]
         model = cls(labels, hidden=(data["w1"].shape[1], data["w2"].shape[1]))

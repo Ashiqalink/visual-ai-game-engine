@@ -1,7 +1,8 @@
-import unittest
 import queue
 import time
-from visual_ai import VisionPipeline, GameEngine, CPP_ENGINE_AVAILABLE
+import unittest
+
+from visual_ai import GameEngine, VisionPipeline
 
 
 class TestPipelineIntegration(unittest.TestCase):

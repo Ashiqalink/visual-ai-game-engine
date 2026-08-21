@@ -46,8 +46,8 @@ prints the whole table for `play doctor`.
 """
 
 import os
-import time
 import threading
+import time
 
 import numpy as np
 

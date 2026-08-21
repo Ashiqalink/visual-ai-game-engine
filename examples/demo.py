@@ -3,12 +3,13 @@ Visual AI Game Engine - Developer Demo Example
 Demonstrates how game developers import and use the visual_ai library.
 """
 
-import time
 import queue
+import time
+
 import cv2
 import numpy as np
 
-from visual_ai import VisionPipeline, GameEngine, CPP_ENGINE_AVAILABLE
+from visual_ai import CPP_ENGINE_AVAILABLE, GameEngine, VisionPipeline
 
 
 def main():

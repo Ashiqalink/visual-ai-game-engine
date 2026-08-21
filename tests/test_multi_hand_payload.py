@@ -14,7 +14,6 @@ Pins down, in particular:
     filter's phase lag, so the two must not be the same signal.
 """
 
-import math
 import queue
 import unittest
 

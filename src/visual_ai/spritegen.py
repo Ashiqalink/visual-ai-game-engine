@@ -30,8 +30,9 @@ OpenCV; :func:`visual_ai.imaging.bgr_to_rgb` converts at the boundary.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict, replace
-from typing import Iterable, Literal
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass, replace
+from typing import Literal
 
 import numpy as np
 
@@ -204,7 +205,7 @@ class CreatureSpec:
             if isinstance(value, list):
                 object.__setattr__(self, field_name, tuple(value))
 
-    def variant(self, **changes) -> "CreatureSpec":
+    def variant(self, **changes) -> CreatureSpec:
         """A copy with fields overridden — handy for palette swaps."""
         return replace(self, **changes)
 

@@ -1,9 +1,10 @@
 import unittest
+
 import numpy as np
-import cv2
-from visual_ai.render3d import Transform3D, Camera3D, Mesh3D, Renderer3D
-from visual_ai.material import Material, ShaderType
-from visual_ai.fallback_engine import PythonFallbackEngine, Entity
+
+from visual_ai.fallback_engine import PythonFallbackEngine
+from visual_ai.material import Material
+from visual_ai.render3d import Camera3D, Mesh3D, Renderer3D, Transform3D
 
 
 class TestRender3D(unittest.TestCase):

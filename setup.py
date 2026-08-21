@@ -15,11 +15,12 @@ to make a build failure fatal instead, which is what CI wants.
 import os
 import sys
 
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 from setuptools.command.build_ext import build_ext as _base_build_ext
 
 try:
-    from pybind11.setup_helpers import Pybind11Extension, build_ext as _pybind_build_ext
+    from pybind11.setup_helpers import Pybind11Extension
+    from pybind11.setup_helpers import build_ext as _pybind_build_ext
 except ImportError:  # pybind11 absent: nothing to build from, so don't try.
     Pybind11Extension = None
     _pybind_build_ext = _base_build_ext
@@ -30,10 +31,10 @@ REQUIRE_CPP = os.environ.get("VISUAL_AI_REQUIRE_CPP", "").lower() in ("1", "true
 def _warn_skipped(reason):
     rule = "=" * 70
     sys.stderr.write(
-        "\n{rule}\n"
+        f"\n{rule}\n"
         "visual_ai: the C++ engine_core extension was NOT built.\n"
-        "{rule}\n"
-        "Reason:\n    {reason}\n\n"
+        f"{rule}\n"
+        f"Reason:\n    {reason}\n\n"
         "This is not fatal. visual_ai falls back to PythonFallbackEngine,\n"
         "which has the same API and the same physics - only slower. Games\n"
         "run normally; check visual_ai.CPP_ENGINE_AVAILABLE to see which\n"
@@ -43,7 +44,7 @@ def _warn_skipped(reason):
         "    macOS    xcode-select --install\n"
         "    Linux    build-essential\n"
         "Set VISUAL_AI_REQUIRE_CPP=1 to make this an error instead.\n"
-        "{rule}\n\n".format(rule=rule, reason=reason)
+        f"{rule}\n\n"
     )
 
 
@@ -56,7 +57,7 @@ class build_ext(_pybind_build_ext):
         except Exception as exc:
             if REQUIRE_CPP:
                 raise
-            _warn_skipped("{}: {}".format(type(exc).__name__, exc))
+            _warn_skipped(f"{type(exc).__name__}: {exc}")
             self.extensions = []
         self._evict_root_shadow()
 
@@ -80,8 +81,8 @@ class build_ext(_pybind_build_ext):
             for path in glob.glob(os.path.join(root, pattern)):
                 os.remove(path)
                 sys.stderr.write(
-                    "visual_ai: removed stale root-level {} - it would have "
-                    "shadowed the build in src/.\n".format(os.path.basename(path)))
+                    f"visual_ai: removed stale root-level {os.path.basename(path)} - it would have "
+                    "shadowed the build in src/.\n")
 
     def build_extension(self, ext):
         try:
@@ -89,7 +90,7 @@ class build_ext(_pybind_build_ext):
         except Exception as exc:
             if REQUIRE_CPP:
                 raise
-            _warn_skipped("{}: {}".format(type(exc).__name__, exc))
+            _warn_skipped(f"{type(exc).__name__}: {exc}")
 
 
 if Pybind11Extension is not None:

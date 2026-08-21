@@ -1,5 +1,6 @@
 import unittest
-from visual_ai import GameEngine, PythonFallbackEngine, Material, Entity, ShaderType
+
+from visual_ai import GameEngine, Material, PythonFallbackEngine
 
 
 class TestGameEngine(unittest.TestCase):
