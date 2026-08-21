@@ -58,6 +58,30 @@ class build_ext(_pybind_build_ext):
                 raise
             _warn_skipped("{}: {}".format(type(exc).__name__, exc))
             self.extensions = []
+        self._evict_root_shadow()
+
+    def _evict_root_shadow(self):
+        """Delete any engine_core .pyd/.so sitting at the repo root.
+
+        The built extension belongs in src/, next to the visual_ai package
+        (package_dir maps there). An older build once dropped one at the repo
+        root instead, and because sys.path[0] is the script directory, that
+        stale copy silently shadowed every fresh build in src/ for any plain
+        interpreter run from this directory - the same trap as the root-level
+        visual_ai/ duplicate pytest.ini warns about. gitignore's *.pyd kept it
+        out of git status, so nothing ever surfaced it. Evict on every build
+        so the trap cannot re-arm; tests/test_no_root_shadow.py fails the
+        suite if one appears between builds.
+        """
+        import glob
+
+        root = os.path.dirname(os.path.abspath(__file__))
+        for pattern in ("engine_core*.pyd", "engine_core*.so"):
+            for path in glob.glob(os.path.join(root, pattern)):
+                os.remove(path)
+                sys.stderr.write(
+                    "visual_ai: removed stale root-level {} - it would have "
+                    "shadowed the build in src/.\n".format(os.path.basename(path)))
 
     def build_extension(self, ext):
         try:
