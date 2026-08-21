@@ -80,7 +80,7 @@ class DepthSource:
     #: a sensor it does not have is how the old code misled everyone.
     synthetic = False
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.is_open = False
         self.last_error = ""
         self.frames_read = 0
@@ -89,7 +89,7 @@ class DepthSource:
 
     # -- lifecycle ---------------------------------------------------------
 
-    def open(self):
+    def open(self) -> bool:
         """Try to open. Returns True on success; never raises."""
         if self.is_open:
             return True
@@ -103,7 +103,7 @@ class DepthSource:
         self._opened_at = time.perf_counter()
         return True
 
-    def read(self):
+    def read(self) -> np.ndarray | None:
         """Newest depth frame as uint16 mm, or None if unavailable."""
         if not self.is_open:
             return None
@@ -122,7 +122,7 @@ class DepthSource:
         self.resolution = (frame.shape[1], frame.shape[0])
         return frame
 
-    def close(self):
+    def close(self) -> None:
         if not self.is_open:
             return
         try:
@@ -132,24 +132,24 @@ class DepthSource:
         self.is_open = False
 
     @property
-    def fps(self):
+    def fps(self) -> float:
         if not self.frames_read or not self._opened_at:
             return 0.0
         return self.frames_read / max(1e-6, time.perf_counter() - self._opened_at)
 
     # -- subclass hooks ----------------------------------------------------
 
-    def _open(self):
+    def _open(self) -> None:
         raise NotImplementedError
 
-    def _read(self):
+    def _read(self) -> np.ndarray | None:
         raise NotImplementedError
 
-    def _close(self):
+    def _close(self) -> None:
         pass
 
 
-def sanitize(frame):
+def sanitize(frame: np.ndarray | None) -> np.ndarray | None:
     """Coerce a raw sensor frame to uint16 mm, or None if it is not depth.
 
     Sensors disagree about dtype and units far more than their datasheets
@@ -206,8 +206,9 @@ class SyntheticDepthSource(DepthSource):
     name = "synthetic"
     synthetic = True
 
-    def __init__(self, width=320, height=240, fps=30.0,
-                 wall_m=2.2, hand_near_m=0.30, hand_far_m=0.80, radius_px=45):
+    def __init__(self, width: int = 320, height: int = 240, fps: float = 30.0,
+                 wall_m: float = 2.2, hand_near_m: float = 0.30,
+                 hand_far_m: float = 0.80, radius_px: int = 45) -> None:
         super().__init__()
         self.width = int(width)
         self.height = int(height)
@@ -219,11 +220,11 @@ class SyntheticDepthSource(DepthSource):
         self._n = 0
         self._next_at = 0.0
 
-    def _open(self):
+    def _open(self) -> None:
         self._n = 0
         self._next_at = time.perf_counter()
 
-    def _read(self):
+    def _read(self) -> np.ndarray:
         # Pace to the declared rate. A source with nothing to wait for will
         # otherwise free-run at thousands of frames a second and burn a core
         # producing frames no consumer asked for -- real sensors block in
@@ -257,7 +258,7 @@ class SyntheticDepthSource(DepthSource):
         return frame
 
     # Where the blob is, for tests that want to check the consumer found it.
-    def expected_hand_mm(self, n=None):
+    def expected_hand_mm(self, n: int | None = None) -> int:
         t = (self._n - 1 if n is None else n) / self.declared_fps
         span = self.far_mm - self.near_mm
         return int(self.near_mm + span * (0.5 + 0.5 * np.sin(t * 0.9)))
@@ -277,7 +278,8 @@ class ReplayDepthSource(DepthSource):
     name = "replay"
     synthetic = True     # real data, but not a live sensor
 
-    def __init__(self, path, loop=True, fps=30.0):
+    def __init__(self, path: str | os.PathLike, loop: bool = True,
+                 fps: float = 30.0) -> None:
         super().__init__()
         self.path = str(path)
         self.loop = bool(loop)
@@ -286,7 +288,7 @@ class ReplayDepthSource(DepthSource):
         self._i = 0
         self._next_at = 0.0
 
-    def _open(self):
+    def _open(self) -> None:
         if not os.path.exists(self.path):
             raise DepthSourceError(f"no such recording: {self.path}")
         data = np.load(self.path)
@@ -299,7 +301,7 @@ class ReplayDepthSource(DepthSource):
         self._next_at = time.perf_counter()
         self.name = f"replay:{os.path.basename(self.path)}"
 
-    def _read(self):
+    def _read(self) -> np.ndarray | None:
         # Same pacing as the synthetic source: a recording played back as fast
         # as memory allows is not a rehearsal of the sensor it came from.
         now = time.perf_counter()
@@ -315,7 +317,7 @@ class ReplayDepthSource(DepthSource):
         self._i += 1
         return frame
 
-    def _close(self):
+    def _close(self) -> None:
         self._frames = None
 
 
@@ -326,21 +328,21 @@ class DepthRecorder:
     recorder on a 640x480 sensor eats 18 MB a second.
     """
 
-    def __init__(self, max_frames=900):
+    def __init__(self, max_frames: int = 900) -> None:
         self.max_frames = int(max_frames)
         self.frames = []
 
-    def feed(self, frame):
+    def feed(self, frame: np.ndarray | None) -> bool:
         if frame is None or len(self.frames) >= self.max_frames:
             return False
         self.frames.append(np.asarray(frame, dtype=np.uint16))
         return True
 
     @property
-    def full(self):
+    def full(self) -> bool:
         return len(self.frames) >= self.max_frames
 
-    def save(self, path):
+    def save(self, path: str | os.PathLike) -> str | os.PathLike:
         if not self.frames:
             raise DepthSourceError("nothing recorded")
         stack = np.stack(self.frames)
@@ -361,12 +363,12 @@ class OpenNI2DepthSource(DepthSource):
 
     name = "openni2"
 
-    def __init__(self, index=0):
+    def __init__(self, index: int = 0) -> None:
         super().__init__()
         self.index = int(index)
         self._cap = None
 
-    def _open(self):
+    def _open(self) -> None:
         if cv2 is None:
             raise DepthSourceError("OpenCV is not available")
         cap = cv2.VideoCapture(self.index + cv2.CAP_OPENNI2)
@@ -377,7 +379,7 @@ class OpenNI2DepthSource(DepthSource):
                 "without OpenNI2 support)")
         self._cap = cap
 
-    def _read(self):
+    def _read(self) -> np.ndarray | None:
         if self._cap is None or not self._cap.grab():
             return None
         # CAP_OPENNI_DEPTH_MAP is 16-bit millimetres, which is already the
@@ -385,7 +387,7 @@ class OpenNI2DepthSource(DepthSource):
         ok, depth = self._cap.retrieve(flag=cv2.CAP_OPENNI_DEPTH_MAP)
         return depth if ok else None
 
-    def _close(self):
+    def _close(self) -> None:
         if self._cap is not None:
             self._cap.release()
             self._cap = None
@@ -402,14 +404,15 @@ class UVCDepthSource(DepthSource):
 
     name = "uvc-y16"
 
-    def __init__(self, index=1, width=None, height=None, fourcc="Y16 "):
+    def __init__(self, index: int = 1, width: int | None = None,
+                 height: int | None = None, fourcc: str = "Y16 ") -> None:
         super().__init__()
         self.index = int(index)
         self.req_size = (width, height)
         self.fourcc = fourcc
         self._cap = None
 
-    def _open(self):
+    def _open(self) -> None:
         if cv2 is None:
             raise DepthSourceError("OpenCV is not available")
         # Platform backend, not DirectShow: this has to open on macOS and
@@ -437,13 +440,13 @@ class UVCDepthSource(DepthSource):
         self._cap = cap
         self.name = f"uvc-y16:{self.index}"
 
-    def _read(self):
+    def _read(self) -> np.ndarray | None:
         if self._cap is None:
             return None
         ok, frame = self._cap.read()
         return frame if ok else None
 
-    def _close(self):
+    def _close(self) -> None:
         if self._cap is not None:
             self._cap.release()
             self._cap = None
@@ -459,13 +462,13 @@ class RealSenseDepthSource(DepthSource):
 
     name = "realsense"
 
-    def __init__(self, width=640, height=480, fps=30):
+    def __init__(self, width: int = 640, height: int = 480, fps: int = 30) -> None:
         super().__init__()
         self.req = (int(width), int(height), int(fps))
         self._pipe = None
         self._scale_to_mm = 1.0
 
-    def _open(self):
+    def _open(self) -> None:
         try:
             import pyrealsense2 as rs
         except ImportError as exc:
@@ -482,7 +485,7 @@ class RealSenseDepthSource(DepthSource):
         self._pipe = pipe
         self._rs = rs
 
-    def _read(self):
+    def _read(self) -> np.ndarray | None:
         if self._pipe is None:
             return None
         frames = self._pipe.wait_for_frames(timeout_ms=1000)
@@ -494,7 +497,7 @@ class RealSenseDepthSource(DepthSource):
             return raw
         return (raw.astype(np.float32) * self._scale_to_mm)
 
-    def _close(self):
+    def _close(self) -> None:
         if self._pipe is not None:
             self._pipe.stop()
             self._pipe = None
@@ -512,7 +515,7 @@ class DepthStream(threading.Thread):
     no depth frame, because it looks current.
     """
 
-    def __init__(self, source, poll_interval=0.0):
+    def __init__(self, source: DepthSource, poll_interval: float = 0.0) -> None:
         super().__init__(daemon=True)
         self.source = source
         self.poll_interval = poll_interval
@@ -525,17 +528,17 @@ class DepthStream(threading.Thread):
         self.frames_seen = 0
         self.last_frame_at = 0.0
 
-    def latest(self):
+    def latest(self) -> np.ndarray | None:
         with self._lock:
             return self._latest
 
-    def age_s(self):
+    def age_s(self) -> float:
         """Seconds since the newest frame arrived; inf if none ever did."""
         if not self.last_frame_at:
             return float("inf")
         return time.perf_counter() - self.last_frame_at
 
-    def run(self):
+    def run(self) -> None:
         if not self.source.is_open and not self.source.open():
             return
         while not self._stop_event.is_set():
@@ -554,7 +557,7 @@ class DepthStream(threading.Thread):
                 time.sleep(self.poll_interval)
         self.source.close()
 
-    def stop(self, join_timeout=1.0):
+    def stop(self, join_timeout: float = 1.0) -> None:
         self._stop_event.set()
         if self.is_alive() and threading.current_thread() is not self:
             self.join(timeout=join_timeout)
@@ -572,7 +575,8 @@ AUTO_CANDIDATES = (
 )
 
 
-def open_depth_source(spec="auto", quiet=True):
+def open_depth_source(spec: str | DepthSource | None = "auto",
+                      quiet: bool = True) -> DepthSource | None:
     """Build and open a source from a spec string. Returns None if none opens.
 
     Specs::
@@ -624,7 +628,7 @@ def open_depth_source(spec="auto", quiet=True):
     return source
 
 
-def probe_depth_sources():
+def probe_depth_sources() -> list[tuple[str, bool, str]]:
     """Try every hardware backend and report. For `play doctor`.
 
     Returns a list of (name, ok, detail). Opens and immediately closes, so it

@@ -20,7 +20,7 @@ except ImportError:                                    # pragma: no cover
     cv2 = None
 
 
-def default_backend():
+def default_backend() -> int:
     """The capture API to request on this platform.
 
     DirectShow on Windows (more predictable than MSMF for webcams and the only
@@ -37,7 +37,8 @@ def default_backend():
     return getattr(cv2, "CAP_V4L2", 0)
 
 
-def open_camera(index=0, width=None, height=None, backend=None):
+def open_camera(index: int = 0, width: int | None = None, height: int | None = None,
+                backend: int | None = None) -> "cv2.VideoCapture | None":
     """Open a camera with the platform's backend. Returns an open cap or None.
 
     Never raises and never hands back a capture that opened but cannot
