@@ -107,22 +107,15 @@ class Camera3D:
         """
         Project a single 3D world point (x, y, z) into 2D screen coordinates (px_x, px_y, z_depth).
         Returns None if behind camera near plane.
+
+        A one-row call into :meth:`project_points`, so the projection maths
+        lives in exactly one place.
         """
-        px, py, pz = point[0], point[1], point[2]
-
-        # Camera-relative translation (assuming camera facing along -Z)
-        rel_x = px - self.position[0]
-        rel_y = py - self.position[1]
-        rel_z = self.position[2] - pz  # depth away from camera
-
-        if rel_z <= self.near:
+        coords, depths, valid = self.project_points(
+            np.array([point], dtype=np.float64))
+        if not valid[0]:
             return None
-
-        # Perspective projection
-        screen_x = (rel_x * self.focal_length / rel_z) + (self.screen_width / 2.0)
-        screen_y = (-rel_y * self.focal_length / rel_z) + (self.screen_height / 2.0)
-
-        return (int(round(screen_x)), int(round(screen_y)), rel_z)
+        return (int(round(coords[0, 0])), int(round(coords[0, 1])), float(depths[0]))
 
     def project_points(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
