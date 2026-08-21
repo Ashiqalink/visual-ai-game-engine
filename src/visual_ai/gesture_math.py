@@ -6,9 +6,9 @@ so game code can evaluate gesture properties without manual coordinate math.
 """
 
 import math
-from typing import Any, Union
+from typing import Any
 
-Point2D = Union[tuple[float, float], dict[str, float], Any]
+Point2D = tuple[float, float] | dict[str, float] | Any
 
 
 def _extract_xy(pt: Point2D) -> tuple[float, float]:

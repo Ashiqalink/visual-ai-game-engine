@@ -8,9 +8,9 @@ Provides generic input stream smoothing (EMA & One-Euro filter).
 
 import math
 import time
-from typing import Any, Union
+from typing import Any
 
-Numeric = Union[float, tuple[float, ...]]
+Numeric = float | tuple[float, ...]
 
 
 class NoiseFilter:
