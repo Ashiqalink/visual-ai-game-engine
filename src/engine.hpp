@@ -106,12 +106,35 @@ public:
     const std::vector<Debris>& get_debris() const { return m_debris; }
     void clear_blocks();
 
+    // The mutable scalar state, get and set.
+    //
+    // PythonFallbackEngine keeps all ten of these as plain attributes, so code
+    // written against it reads `engine.x` and assigns `engine.gravity = 500`.
+    // The bindings published only the six getters below, and none of the
+    // setters, so that same code met an AttributeError the moment it ran on a
+    // machine with the compiled core. bridge.cpp turns each pair into a
+    // def_property, which is what makes the two surfaces the same.
     float get_x() const { return m_x; }
     float get_y() const { return m_y; }
+    float get_vx() const { return m_vx; }
+    float get_vy() const { return m_vy; }
+    float get_gravity() const { return m_gravity; }
+    float get_radius() const { return m_radius; }
     float get_target_x() const { return m_target_x; }
     float get_target_y() const { return m_target_y; }
     float get_width() const { return m_width; }
     float get_height() const { return m_height; }
+
+    void set_x(float value) { m_x = value; }
+    void set_y(float value) { m_y = value; }
+    void set_vx(float value) { m_vx = value; }
+    void set_vy(float value) { m_vy = value; }
+    void set_gravity(float value) { m_gravity = value; }
+    void set_radius(float value) { m_radius = value; }
+    void set_target_x(float value) { m_target_x = value; }
+    void set_target_y(float value) { m_target_y = value; }
+    void set_width(float value) { m_width = value; }
+    void set_height(float value) { m_height = value; }
 
 private:
     float m_width;

@@ -22,7 +22,8 @@ from visual_ai.gesture_mlp import GestureMLP
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data", required=True, help=".npz produced by collect_gesture_samples.py")
     parser.add_argument("--out", default="gesture_mlp.npz", help="output model .npz path")
     parser.add_argument("--hidden", default="32,16", help="two hidden layer sizes, comma-separated")

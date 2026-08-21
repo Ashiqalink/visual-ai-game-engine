@@ -1,23 +1,24 @@
 """
 Visual AI Game Engine - Seamless 3D Elements Demo
-Demonstrates rendering, projecting, and interacting with 3D primitives driven by AI gesture tracking.
+Demonstrates rendering, projecting, and interacting with 3D primitives driven
+by AI gesture tracking.
 """
 
-import time
 import queue
+import time
+
 import cv2
 import numpy as np
 
 from visual_ai import (
-    VisionPipeline,
-    GameEngine,
     CPP_ENGINE_AVAILABLE,
-    Transform3D,
     Camera3D,
+    GameEngine,
+    Material,
     Mesh3D,
     Renderer3D,
-    Material,
-    ShaderType,
+    Transform3D,
+    VisionPipeline,
 )
 
 
@@ -37,7 +38,8 @@ def main():
     engine = GameEngine(float(WIDTH), float(HEIGHT))
 
     # Initialize 3D Camera & Software Renderer
-    camera = Camera3D(fov=60.0, screen_width=WIDTH, screen_height=HEIGHT, position=(0.0, 0.0, 500.0))
+    camera = Camera3D(fov=60.0, screen_width=WIDTH, screen_height=HEIGHT,
+                      position=(0.0, 0.0, 500.0))
     renderer = Renderer3D(camera=camera)
 
     # Spawn 3D Elements with materials, rotation speeds, and geometries
@@ -48,7 +50,7 @@ def main():
 
     # 1. Rotating Gold Cube
     gold_mat = Material.preset("gold")
-    cube_ent = engine.add_3d_element(
+    engine.add_3d_element(
         name="GoldCube",
         x=-150.0, y=50.0, z=0.0,
         vrx=30.0, vry=60.0, vrz=15.0,
@@ -59,7 +61,7 @@ def main():
 
     # 2. Emissive Neon Pyramid
     neon_mat = Material.preset("emissive")
-    pyramid_ent = engine.add_3d_element(
+    engine.add_3d_element(
         name="NeonPyramid",
         x=150.0, y=-50.0, z=0.0,
         vrx=45.0, vry=30.0, vrz=0.0,
@@ -70,7 +72,7 @@ def main():
 
     # 3. Smooth Plastic Sphere
     plastic_mat = Material.preset("plastic")
-    sphere_ent = engine.add_3d_element(
+    engine.add_3d_element(
         name="PlasticSphere",
         x=0.0, y=-120.0, z=50.0,
         vrx=20.0, vry=40.0, vrz=0.0,
@@ -95,7 +97,8 @@ def main():
     pipeline = VisionPipeline(result_queue=ai_queue, width=WIDTH, height=HEIGHT)
     pipeline.start()
 
-    print("[3D Demo] 3D Scene running. Move hand or face in camera to interact! Press 'q' or 'ESC' to quit.")
+    print("[3D Demo] 3D Scene running. Move hand or face in camera to "
+          "interact! Press 'q' or 'ESC' to quit.")
 
     last_time = time.time()
     current_frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
@@ -189,7 +192,8 @@ def main():
             )
             cv2.putText(
                 canvas,
-                f"3D Elements: {len(entities)} | Tracked Target: ({int(target_ent.x)}, {int(target_ent.y)}, {int(target_ent.z)})",
+                f"3D Elements: {len(entities)} | Tracked Target: "
+                f"({int(target_ent.x)}, {int(target_ent.y)}, {int(target_ent.z)})",
                 (20, 70),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,

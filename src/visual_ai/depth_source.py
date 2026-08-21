@@ -46,8 +46,8 @@ prints the whole table for `play doctor`.
 """
 
 import os
-import time
 import threading
+import time
 
 import numpy as np
 
@@ -600,7 +600,7 @@ def open_depth_source(spec="auto", quiet=True):
             if source.open():
                 return source
             if not quiet:
-                print(f"[depth] {label}: {source.last_error}")
+                print(f"[DepthSource] {label}: {source.last_error}")
         return None
 
     head, _, arg = spec.partition(":")
@@ -619,7 +619,7 @@ def open_depth_source(spec="auto", quiet=True):
 
     if not source.open():
         if not quiet:
-            print(f"[depth] {spec}: {source.last_error}")
+            print(f"[DepthSource] {spec}: {source.last_error}")
         return None
     return source
 

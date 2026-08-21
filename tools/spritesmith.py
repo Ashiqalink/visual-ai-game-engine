@@ -84,7 +84,7 @@ def parse_colour(text: str) -> tuple[int, int, int]:
 
 
 def load_spec(path: str) -> va.CreatureSpec:
-    with open(path, "r", encoding="utf-8") as handle:
+    with open(path, encoding="utf-8") as handle:
         data = json.load(handle)
     try:
         return va.spec_from_dict(data)
@@ -109,7 +109,7 @@ def write_views(spec: va.CreatureSpec, out_dir: str, size: int) -> list[str]:
     return written
 
 
-def checkerboard(height: int, width: int, square: int = 16) -> "np.ndarray":
+def checkerboard(height: int, width: int, square: int = 16) -> np.ndarray:
     yy, xx = np.mgrid[0:height, 0:width]
     shade = np.where(((yy // square + xx // square) % 2) == 0, 240, 205).astype(np.uint8)
     return np.dstack([shade] * 3 + [np.full((height, width), 255, np.uint8)])

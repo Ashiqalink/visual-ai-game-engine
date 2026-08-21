@@ -153,8 +153,8 @@ class JitterAnalyzer:
         if self.raw_positions:
             prev_raw = self.raw_positions[-1]
             prev_smooth = self.smoothed_positions[-1]
-            self.deltas_raw.append(_norm(_sub(raw, prev_raw)))
-            self.deltas_smoothed.append(_norm(_sub(smooth, prev_smooth)))
+            self.deltas_raw.append(math.dist(raw, prev_raw))
+            self.deltas_smoothed.append(math.dist(smooth, prev_smooth))
 
         self.raw_positions.append(raw)
         self.smoothed_positions.append(smooth)
@@ -202,14 +202,6 @@ class JitterAnalyzer:
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
-
-def _sub(a: tuple, b: tuple) -> tuple:
-    return tuple(x - y for x, y in zip(a, b))
-
-
-def _norm(v: tuple) -> float:
-    return math.sqrt(sum(c * c for c in v))
-
 
 def _detrended_metrics(positions) -> tuple[float, float]:
     """

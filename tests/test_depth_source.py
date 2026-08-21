@@ -7,14 +7,15 @@ staleness behaviour, and the consumer side of the pipeline reading a real
 depth map instead of the landmark estimate it used to fall back on.
 """
 
-import os
-import time
 import queue
+import time
 
 import numpy as np
 import pytest
 
 from visual_ai.depth_source import (
+    MAX_VALID_MM,
+    MIN_VALID_MM,
     DepthRecorder,
     DepthStream,
     OpenNI2DepthSource,
@@ -22,8 +23,6 @@ from visual_ai.depth_source import (
     ReplayDepthSource,
     SyntheticDepthSource,
     UVCDepthSource,
-    MAX_VALID_MM,
-    MIN_VALID_MM,
     open_depth_source,
     probe_depth_sources,
     sanitize,
@@ -104,7 +103,8 @@ class TestSyntheticSource:
     def test_deterministic(self):
         a = SyntheticDepthSource(width=32, height=24)
         b = SyntheticDepthSource(width=32, height=24)
-        a.open(); b.open()
+        a.open()
+        b.open()
         for _ in range(5):
             assert np.array_equal(a.read(), b.read())
 

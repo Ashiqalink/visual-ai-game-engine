@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 
 from visual_ai.low_light import (
-    LowLightBoost,
-    measure_luma,
     DARK_LUMA,
     MAX_GAIN,
+    LowLightBoost,
+    measure_luma,
 )
 
 

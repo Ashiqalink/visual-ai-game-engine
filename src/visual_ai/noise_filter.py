@@ -8,9 +8,9 @@ Provides generic input stream smoothing (EMA & One-Euro filter).
 
 import math
 import time
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any
 
-Numeric = Union[float, Tuple[float, ...]]
+Numeric = float | tuple[float, ...]
 
 
 class NoiseFilter:
@@ -21,7 +21,7 @@ class NoiseFilter:
         :param noise_duration: Time window in seconds during which detections/events are suppressed.
         """
         self.noise_duration: float = float(noise_duration)
-        self.start_time: Optional[float] = None
+        self.start_time: float | None = None
 
     def start(self) -> None:
         """Explicitly start or restart the noise filter timer."""
@@ -61,7 +61,7 @@ class GenericStreamFilter:
 
     def __init__(self, alpha: float = 0.25):
         self.alpha = max(0.0, min(1.0, float(alpha)))
-        self.prev_val: Optional[Numeric] = None
+        self.prev_val: Numeric | None = None
 
     def filter(self, val: Numeric) -> Numeric:
         if val is None:
@@ -138,9 +138,9 @@ class OneEuroFilter:
         self.beta = max(0.0, float(beta))
         self.d_cutoff = max(1e-3, float(d_cutoff))
 
-        self._x_prev: Optional[Tuple[float, ...]] = None
-        self._dx_prev: Optional[Tuple[float, ...]] = None
-        self._t_prev: Optional[float] = None
+        self._x_prev: tuple[float, ...] | None = None
+        self._dx_prev: tuple[float, ...] | None = None
+        self._t_prev: float | None = None
         self._scalar: bool = False
 
     @staticmethod
@@ -159,13 +159,13 @@ class OneEuroFilter:
         return self._x_prev is not None
 
     @property
-    def value(self) -> Optional[Numeric]:
+    def value(self) -> Numeric | None:
         """Most recent filtered output, or None before the first sample."""
         if self._x_prev is None:
             return None
         return self._x_prev[0] if self._scalar else self._x_prev
 
-    def filter(self, val: Numeric, timestamp: Optional[float] = None) -> Numeric:
+    def filter(self, val: Numeric, timestamp: float | None = None) -> Numeric:
         """
         Filter one sample.
 
@@ -177,7 +177,7 @@ class OneEuroFilter:
             as the timestep, which is fine for fixed-rate capture loops.
         """
         scalar = not isinstance(val, (tuple, list))
-        vec: Tuple[float, ...] = (float(val),) if scalar else tuple(float(v) for v in val)
+        vec: tuple[float, ...] = (float(val),) if scalar else tuple(float(v) for v in val)
 
         # A single NaN/inf sample would otherwise seed _x_prev/_dx_prev and
         # every later output stays NaN until reset() — in the pipeline that is
@@ -260,7 +260,7 @@ class FilteredGestureDetector:
         """Reset timing window when restarting game state or transitioning levels."""
         self.noise_filter.reset()
 
-    def filter_event(self, event_name: str, payload: Any = None) -> Optional[Dict[str, Any]]:
+    def filter_event(self, event_name: str, payload: Any = None) -> dict[str, Any] | None:
         """
         Filters an incoming gesture event.
         Returns None if inside noise duration window, otherwise returns dict payload.
@@ -269,7 +269,7 @@ class FilteredGestureDetector:
             return None
         return {"event": event_name, "payload": payload}
 
-    def detect_gesture(self, frame: Any) -> Optional[Any]:
+    def detect_gesture(self, frame: Any) -> Any | None:
         """
         Detects gesture on input frame. If within noise duration, returns None without processing.
         """
@@ -314,27 +314,37 @@ class PipelineNoiseFilter:
     def __init__(self, noise_duration: float = 2.0):
         self.filter = NoiseFilter(noise_duration=noise_duration)
 
-    def process_payload(self, payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def process_payload(self, payload: dict[str, Any] | None) -> dict[str, Any] | None:
         """
-        Processes pipeline payload dict, returning a shallow copy.
-        Zeroes out gesture trigger flags when inside noise window.
+        Zero out gesture trigger flags while inside the noise window.
 
         Only keys already present are modified — the filter never invents keys,
-        so a payload shape stays exactly as the pipeline defined it.
+        so a payload shape stays exactly as the pipeline defined it. Inside the
+        window the result is a shallow copy and the caller's dict is untouched;
+        outside it the caller's dict is handed straight back.
         """
         if payload is None:
             return None
 
-        # Create shallow copy of payload to preserve raw data if needed
-        filtered_payload = payload.copy()
+        # The window is open for the first couple of seconds of a session and
+        # shut for the rest of it — and shut permanently when noise_duration is
+        # <= 0, which is how the filter ships. Copying a ~55-key payload every
+        # frame in order to change nothing in it was the entire per-frame cost
+        # of a feature that is off by default. Nothing is modified on this path,
+        # so there is no raw data left for a copy to preserve.
+        #
+        # is_active() is still what decides, so it keeps starting the timer on
+        # first evaluation exactly as before.
+        if not self.filter.is_active():
+            return payload
 
-        if self.filter.is_active():
-            for key in self.SUPPRESSED_FLAGS:
-                if key in filtered_payload:
-                    filtered_payload[key] = False
-            for key in self.SUPPRESSED_SCALARS:
-                if key in filtered_payload:
-                    filtered_payload[key] = 0.0
+        filtered_payload = payload.copy()
+        for key in self.SUPPRESSED_FLAGS:
+            if key in filtered_payload:
+                filtered_payload[key] = False
+        for key in self.SUPPRESSED_SCALARS:
+            if key in filtered_payload:
+                filtered_payload[key] = 0.0
 
         return filtered_payload
 

@@ -285,5 +285,24 @@ PYBIND11_MODULE(engine_core, m) {
         .def("get_target_x", &PyGameEngine::get_target_x)
         .def("get_target_y", &PyGameEngine::get_target_y)
         .def("get_width", &PyGameEngine::get_width)
-        .def("get_height", &PyGameEngine::get_height);
+        .def("get_height", &PyGameEngine::get_height)
+        // The same state again, as assignable attributes.
+        //
+        // PythonFallbackEngine holds all ten as plain instance attributes, so
+        // `engine.gravity = 500` and `engine.x` are ordinary things to write
+        // against it. Only the six getters above were ever bound, so that code
+        // raised AttributeError on any machine where the compiled core loaded
+        // instead - and which one loads depends on nothing but whether a .pyd
+        // happens to be next to the package. The getters stay: they are the
+        // existing API, and dropping them would break the other direction.
+        .def_property("x", &PyGameEngine::get_x, &PyGameEngine::set_x)
+        .def_property("y", &PyGameEngine::get_y, &PyGameEngine::set_y)
+        .def_property("vx", &PyGameEngine::get_vx, &PyGameEngine::set_vx)
+        .def_property("vy", &PyGameEngine::get_vy, &PyGameEngine::set_vy)
+        .def_property("gravity", &PyGameEngine::get_gravity, &PyGameEngine::set_gravity)
+        .def_property("radius", &PyGameEngine::get_radius, &PyGameEngine::set_radius)
+        .def_property("target_x", &PyGameEngine::get_target_x, &PyGameEngine::set_target_x)
+        .def_property("target_y", &PyGameEngine::get_target_y, &PyGameEngine::set_target_y)
+        .def_property("width", &PyGameEngine::get_width, &PyGameEngine::set_width)
+        .def_property("height", &PyGameEngine::get_height, &PyGameEngine::set_height);
 }

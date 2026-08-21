@@ -2,6 +2,7 @@
 import os
 import sys
 import time
+
 import cv2
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
@@ -28,7 +29,8 @@ def main():
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(OUT, fourcc, FPS, (WIDTH, HEIGHT))
 
-    print(f"Recording {DURATION_S}s from camera {cam_index} to {OUT} — move a hand around in frame now.")
+    print(f"Recording {DURATION_S}s from camera {cam_index} to {OUT} — "
+          "move a hand around in frame now.")
     start = time.time()
     frames = 0
     while time.time() - start < DURATION_S:

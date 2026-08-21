@@ -126,17 +126,17 @@ import time
 import cv2
 import numpy as np
 
+from visual_ai.depth_source import DepthStream, open_depth_source
+from visual_ai.gesture_math import get_landmark_velocity
+from visual_ai.gesture_mlp import GestureMLP, landmarks_to_features
+from visual_ai.jitter_analyzer import JitterAnalyzer
+from visual_ai.low_light import LowLightBoost
 from visual_ai.noise_filter import (
     OneEuroFilter,
     PipelineNoiseFilter,
     ema_alpha_to_cutoff,
 )
-from visual_ai.jitter_analyzer import JitterAnalyzer
-from visual_ai.depth_source import DepthStream, open_depth_source
-from visual_ai.low_light import LowLightBoost
 from visual_ai.tof_stabilizer import ToFStabilizer
-from visual_ai.gesture_mlp import GestureMLP, landmarks_to_features
-from visual_ai.gesture_math import get_landmark_velocity
 
 # ── Optional MediaPipe imports ────────────────────────────────────────────────
 HAS_MEDIAPIPE = False
@@ -144,7 +144,7 @@ mp_face_detection_module = None
 mp_hands_module = None
 
 try:
-    import mediapipe as mp
+    import mediapipe as mp  # noqa: F401 - availability probe; used via the names below
 
     # Face detection
     try:
@@ -234,7 +234,7 @@ def classify_hand_sign(fingers_extended) -> str:
 
 
 def _dist2d(p1, p2) -> float:
-    return math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
+    return math.dist(p1[:2], p2[:2])
 
 
 # ── EMA helper ────────────────────────────────────────────────────────────────
@@ -548,6 +548,10 @@ class VisionPipeline(threading.Thread):
         self._gs = self._gs_slots[0]
         self.jitter_analyzer = self._jitter_slots[0]
 
+        # Size-dependent parts of the calibration overlay, built on first use.
+        # See _calibration_chrome().
+        self._calib_chrome: dict | None = None
+
         self.last_error: str | None = None
         self.camera_available: bool = False
 
@@ -575,11 +579,18 @@ class VisionPipeline(threading.Thread):
         )
 
     def _apply_filter_tuning(self) -> None:
-        """Push current tuning onto the live filters without dropping their state."""
-        for f in (self._gs.index_filter, self._gs.centroid_filter):
-            if f is not None:
-                f.min_cutoff = self.filter_min_cutoff
-                f.beta = self.filter_beta
+        """
+        Push current tuning onto the live filters without dropping their state.
+
+        Every slot, not just `self._gs`. Retuning slot 0 alone left the second
+        hand running the settings it was built with, so `set_smooth_alpha` moved
+        one hand and not the other.
+        """
+        for gs in self._gs_slots:
+            for f in (gs.index_filter, gs.centroid_filter):
+                if f is not None:
+                    f.min_cutoff = self.filter_min_cutoff
+                    f.beta = self.filter_beta
 
     def set_smooth_alpha(self, alpha: float) -> None:
         """
@@ -625,7 +636,7 @@ class VisionPipeline(threading.Thread):
         return self.smoothing_enabled
 
     def set_movement_magnification(self, mag: float):
-        """Dynamically update movement magnification factor for input tracking and gesture pinch scaling."""
+        """Update the movement magnification for tracking and pinch scaling."""
         self.movement_magnification = max(0.5, float(mag))
 
     def set_noise_duration(self, duration: float):
@@ -749,7 +760,8 @@ class VisionPipeline(threading.Thread):
                         else None)
                     self.depth_fps = self.depth_stream.source.fps
 
-                if self.camera_available and cap is not None and not getattr(self, 'disable_camera', False):
+                if (self.camera_available and cap is not None
+                        and not getattr(self, 'disable_camera', False)):
                     try:
                         ret, frame = cap.read()
                         if not ret or frame is None:
@@ -985,7 +997,8 @@ class VisionPipeline(threading.Thread):
         }
 
         if self.emit_depth_grid:
-            payload["depth_grid"] = self._build_depth_grid(hands, face_box if face_visible else None)
+            payload["depth_grid"] = self._build_depth_grid(
+                hands, face_box if face_visible else None)
 
         if self.emit_person_mask:
             payload["person_mask"] = self._get_person_mask(bgr_frame)
@@ -1119,51 +1132,20 @@ class VisionPipeline(threading.Thread):
         return grid
 
     # ── Gesture extraction ────────────────────────────────────────────────────
-    def _extract_gesture(self, lm, slot: int = 0, now: float | None = None) -> dict:
+    def _smooth_and_motion(self, gs, raw_ix: float, raw_iy: float,
+                           c_x: float, c_y: float, now: float) -> tuple:
         """
-        Given MediaPipe hand landmarks (already mirrored via frame flip),
-        compute and return the full gesture dict.
+        One-Euro smoothing, plus the fingertip motion differenced from it.
 
-        ``slot`` selects which hand's filter / debounce / jitter state to use.
-        Slot 0 is the default and is the state every single-hand consumer has
-        always been driving.
-
-        ``now`` overrides the timestamp fed to the One-Euro filters and the
-        velocity difference. It exists because both are dt-dependent and
-        wall-clock dt is whatever the machine happened to do: a test that steps
-        landmarks in a tight loop sees a sub-100 us dt, which is below the guard
-        on the velocity difference, so the motion keys never move off zero and
-        the filter behaves nothing like it does at 30 fps.
+        Mutates ``gs`` — filter state, velocity, acceleration, previous frame —
+        and returns the two display positions the payload carries,
+        ``(index_pos, pinch_pos)``.
         """
-        gs = self._gs_slots[slot]
-        jitter_analyzer = self._jitter_slots[slot]
-        W, H = self.width, self.height
-
-        # Raw pixel positions (frame is already flipped, so no extra mirror needed)
-        raw_ix = lm[8].x * W   # index tip
-        raw_iy = lm[8].y * H
-        raw_tx = lm[4].x * W   # thumb tip
-        raw_ty = lm[4].y * H
-        raw_mx = lm[12].x * W  # middle tip
-        raw_my = lm[12].y * H
-
-        thumb_pos  = (round(raw_tx), round(raw_ty))
-        index_pos  = (round(raw_ix), round(raw_iy))
-        middle_pos = (round(raw_mx), round(raw_my))
-
-        # Centroid of the 3 fingers
-        c_x = (raw_tx + raw_ix + raw_mx) / 3.0
-        c_y = (raw_ty + raw_iy + raw_my) / 3.0
-        centroid_pos = (round(c_x), round(c_y))
-
-        z_val = lm[8].z   # MediaPipe Z
-
         # ── Landmark smoothing (One-Euro, velocity-adaptive) ──────────────────
         # Heavy smoothing at rest kills fingertip jitter; the cutoff opens up
         # with hand speed so fast motion stays lag-free. A fixed-alpha EMA
         # cannot do both, which is why tracking previously felt either shaky
         # or laggy depending on which way `smooth_alpha` was pushed.
-        now = time.time() if now is None else float(now)
         gs.smooth_ix, gs.smooth_iy = gs.index_filter.filter((raw_ix, raw_iy), now)
         gs.smooth_px, gs.smooth_py = gs.centroid_filter.filter((c_x, c_y), now)
         gs.smoothed = True
@@ -1197,48 +1179,31 @@ class VisionPipeline(threading.Thread):
         gs.prev_xy = (gs.smooth_ix, gs.smooth_iy)
         gs.prev_raw_xy = (raw_ix, raw_iy)
 
-        # ── 1. 2-Finger Pinch (DISABLED — superseded by the 3-finger lock below)
-        # The thumb/index distance test fired constantly at frame edges where
-        # MediaPipe compresses the hand, so the 3-finger centroid test replaced
-        # it. Kept out deliberately rather than left half-wired.
+        return index_pos, pinch_pos
 
-        # Z-push click is evaluated after the ToF section below, since it wants
-        # the stabilized depth when a sensor is present.
-        click_fired = False
-        z_delta = 0.0
-        xy_drift = 0.0
+    def _classify_fingers(self, lm, gs) -> tuple:
+        """
+        Finger extension, the debounced hand sign, and the continuous grip.
 
-        # ── 3-Finger Pinch Trigger ───────────────────────────────────────────
-        # Distance from each fingertip to centroid
-        dist_t_c = math.sqrt((raw_tx - c_x)**2 + (raw_ty - c_y)**2)
-        dist_i_c = math.sqrt((raw_ix - c_x)**2 + (raw_iy - c_y)**2)
-        dist_m_c = math.sqrt((raw_mx - c_x)**2 + (raw_my - c_y)**2)
-        max_dist_to_centroid = max(dist_t_c, dist_i_c, dist_m_c)
+        Returns ``(fingers_extended, is_isolated, hand_sign, grip_openness)``.
 
-        base_pinch_radius = 55.0
-        effective_pinch_radius = base_pinch_radius * max(1.0, float(self.movement_magnification))
-        is_3_pinching = max_dist_to_centroid < effective_pinch_radius
-
-        # Trigger action on the rising edge of a 3-finger pinch
-        if is_3_pinching and not gs.was_3_pinching:
-            click_fired = True
-        gs.was_3_pinching = is_3_pinching
-        gs.pinch_active = is_3_pinching
+        Extension and grip both want each fingertip's and each PIP joint's
+        distance from the wrist, and used to measure them separately — sixteen
+        square roots per hand per frame where eight will do. ``reach`` holds
+        those eight, keyed by landmark id.
+        """
+        def xyz(i: int) -> tuple:
+            p = lm[i]
+            return (p.x, p.y, p.z)
 
         # ── 3. Finger extension & hand sign ───────────────────────────────────
         # Anchored at the wrist (landmark 0): a finger counts as extended when
         # its tip sits further from the wrist than its own PIP joint. This is
         # tolerant of hand rotation and works for the thumb too, which the
         # previous landmark-9 anchor could not measure meaningfully.
-        def dist3d(a_id: int, b_id: int) -> float:
-            return math.sqrt(
-                (lm[a_id].x - lm[b_id].x) ** 2 +
-                (lm[a_id].y - lm[b_id].y) ** 2 +
-                (lm[a_id].z - lm[b_id].z) ** 2
-            )
-
-        def extended(tip: int, pip: int) -> bool:
-            return dist3d(tip, 0) > dist3d(pip, 0)
+        wrist = xyz(0)
+        joints = ((8, 6), (12, 10), (16, 14), (20, 18))   # tip, pip per finger
+        reach = {i: math.dist(xyz(i), wrist) for pair in joints for i in pair}
 
         # The wrist anchor is degenerate for the thumb: landmark 2 (thumb MCP)
         # sits almost on the wrist, so the tip clears it even with the thumb
@@ -1247,12 +1212,12 @@ class VisionPipeline(threading.Thread):
         # pinky MCP (17) while an extended one swings away from it, so compare
         # the tip against its own IP joint with a palm-scaled margin so a
         # resting thumb cannot flicker.
-        palm_span  = max(dist3d(0, 17), 1e-6)
-        thumb_ext  = (dist3d(4, 17) - dist3d(3, 17)) > 0.10 * palm_span
-        index_ext  = extended(8,  6)
-        middle_ext = extended(12, 10)
-        ring_ext   = extended(16, 14)
-        pinky_ext  = extended(20, 18)
+        pinky_mcp  = xyz(17)
+        palm_span  = max(math.dist(wrist, pinky_mcp), 1e-6)
+        thumb_ext  = (math.dist(xyz(4), pinky_mcp)
+                      - math.dist(xyz(3), pinky_mcp)) > 0.10 * palm_span
+        index_ext, middle_ext, ring_ext, pinky_ext = (
+            reach[tip] > reach[pip] for tip, pip in joints)
         fingers_extended = (thumb_ext, index_ext, middle_ext, ring_ext, pinky_ext)
 
         # Relaxed index isolation: allow middle finger co-extension (natural tendon attachment),
@@ -1279,16 +1244,24 @@ class VisionPipeline(threading.Thread):
         # Per finger, how far the tip reaches past its own PIP joint, measured
         # from the wrist and scaled by the palm so hand size and camera distance
         # drop out.
-        def curl(tip: int, pip: int) -> float:
-            reach = (dist3d(tip, 0) - dist3d(pip, 0)) / (0.5 * palm_span)
-            return min(1.0, max(0.0, reach))
-
+        half_span = 0.5 * palm_span
         grip_openness = sum(
-            curl(tip, pip) for tip, pip in ((8, 6), (12, 10), (16, 14), (20, 18))
+            min(1.0, max(0.0, (reach[tip] - reach[pip]) / half_span))
+            for tip, pip in joints
         ) / 4.0
 
+        return fingers_extended, is_isolated, hand_sign, grip_openness
+
+    def _depth_and_click(self, gs, index_pos: tuple, z_val: float) -> tuple:
+        """
+        Depth sample, stabilizer gating, then the opt-in Z-push click.
+
+        Returns ``(depth_active, depth_m, depth_raw_m, depth_source, z_click,
+        z_delta, xy_drift)``. The last three stay inert unless `enable_z_click`.
+        """
         # ── 4. Depth lookup ───────────────────────────────────────────────────
-        depth_active, depth_raw_m, depth_source = self.sample_depth(index_pos[0], index_pos[1], z_val)
+        depth_active, depth_raw_m, depth_source = self.sample_depth(
+            index_pos[0], index_pos[1], z_val)
 
         # Feed raw sample to calibrator during sampling window
         if self.tof_stabilizer.state == ToFStabilizer.STATE_SAMPLING:
@@ -1301,9 +1274,8 @@ class VisionPipeline(threading.Thread):
         # Driven by stabilized metric depth when a sensor is present, so the
         # threshold is in real metres and can be floored by the stabilizer's
         # measured noise gate. Falls back to MediaPipe's relative Z otherwise.
+        z_click, z_delta, xy_drift = False, 0.0, 0.0
         if self.enable_z_click:
-            # OR'd with the 3-finger-pinch edge above, never assigned over it —
-            # enabling the depth push must not silently disable the pinch click.
             if depth_active:
                 z_click, z_delta, xy_drift = self._detect_z_click(
                     depth_m, index_pos,
@@ -1316,10 +1288,91 @@ class VisionPipeline(threading.Thread):
                     z_val, index_pos, threshold=_Z_CLICK_THRESHOLD,
                     gs=gs, source="mp",
                 )
-            click_fired = click_fired or z_click
+
+        return (depth_active, depth_m, depth_raw_m, depth_source,
+                z_click, z_delta, xy_drift)
+
+    def _extract_gesture(self, lm, slot: int = 0, now: float | None = None) -> dict:
+        """
+        Given MediaPipe hand landmarks (already mirrored via frame flip),
+        compute and return the full gesture dict.
+
+        The work is split across `_smooth_and_motion`, `_classify_fingers` and
+        `_depth_and_click`; what is left here is fingertip positioning, the
+        3-finger pinch edge, and assembling the payload. The keys below are the
+        schema every game indexes — `_empty_gesture` must carry every one.
+
+        ``slot`` selects which hand's filter / debounce / jitter state to use.
+        Slot 0 is the default and is the state every single-hand consumer has
+        always been driving.
+
+        ``now`` overrides the timestamp fed to the One-Euro filters and the
+        velocity difference. It exists because both are dt-dependent and
+        wall-clock dt is whatever the machine happened to do: a test that steps
+        landmarks in a tight loop sees a sub-100 us dt, which is below the guard
+        on the velocity difference, so the motion keys never move off zero and
+        the filter behaves nothing like it does at 30 fps.
+        """
+        gs = self._gs_slots[slot]
+        W, H = self.width, self.height
+
+        # Raw pixel positions (frame is already flipped, so no extra mirror needed)
+        raw_ix = lm[8].x * W   # index tip
+        raw_iy = lm[8].y * H
+        raw_tx = lm[4].x * W   # thumb tip
+        raw_ty = lm[4].y * H
+        raw_mx = lm[12].x * W  # middle tip
+        raw_my = lm[12].y * H
+
+        thumb_pos  = (round(raw_tx), round(raw_ty))
+        middle_pos = (round(raw_mx), round(raw_my))
+
+        # Centroid of the 3 fingers
+        c_x = (raw_tx + raw_ix + raw_mx) / 3.0
+        c_y = (raw_ty + raw_iy + raw_my) / 3.0
+        centroid_pos = (round(c_x), round(c_y))
+
+        z_val = lm[8].z   # MediaPipe Z
+
+        now = time.time() if now is None else float(now)
+        index_pos, pinch_pos = self._smooth_and_motion(gs, raw_ix, raw_iy, c_x, c_y, now)
+
+        # ── 1. 2-Finger Pinch (DISABLED — superseded by the 3-finger lock below)
+        # The thumb/index distance test fired constantly at frame edges where
+        # MediaPipe compresses the hand, so the 3-finger centroid test replaced
+        # it. Kept out deliberately rather than left half-wired.
+
+        # ── 3-Finger Pinch Trigger ───────────────────────────────────────────
+        # Distance from each fingertip to the centroid.
+        centroid = (c_x, c_y)
+        max_dist_to_centroid = max(math.dist((raw_tx, raw_ty), centroid),
+                                   math.dist((raw_ix, raw_iy), centroid),
+                                   math.dist((raw_mx, raw_my), centroid))
+
+        base_pinch_radius = 55.0
+        effective_pinch_radius = base_pinch_radius * max(1.0, float(self.movement_magnification))
+        is_3_pinching = max_dist_to_centroid < effective_pinch_radius
+
+        # Trigger action on the rising edge of a 3-finger pinch
+        click_fired = is_3_pinching and not gs.was_3_pinching
+        gs.was_3_pinching = is_3_pinching
+        gs.pinch_active = is_3_pinching
+
+        fingers_extended, is_isolated, hand_sign, grip_openness = (
+            self._classify_fingers(lm, gs))
+
+        # The Z-push click is evaluated after the depth section rather than
+        # alongside the pinch above, because it wants the stabilized depth when
+        # a sensor is present.
+        (depth_active, depth_m, depth_raw_m, depth_source,
+         z_click, z_delta, xy_drift) = self._depth_and_click(gs, index_pos, z_val)
+        # OR'd with the 3-finger-pinch edge above, never assigned over it —
+        # enabling the depth push must not silently disable the pinch click.
+        click_fired = click_fired or z_click
 
         # ── 6. Jitter Calculation ──────────────────────────────────────────────
-        jitter_stats = jitter_analyzer.update((raw_ix, raw_iy), (gs.smooth_ix, gs.smooth_iy))
+        jitter_stats = self._jitter_slots[slot].update(
+            (raw_ix, raw_iy), (gs.smooth_ix, gs.smooth_iy))
 
         return {
             "hand_visible":        True,
@@ -1437,7 +1490,7 @@ class VisionPipeline(threading.Thread):
         # Say what it is. The old labels said "ToF Hardware" for a number
         # computed from a MediaPipe landmark, which is how everyone came to
         # believe this engine had a depth sensor in it.
-        src_label = ("Depth sensor (%s)" % self.depth_device_name
+        src_label = (f"Depth sensor ({self.depth_device_name})"
                      if self.depth_active else "Simulated depth (no sensor)")
         return True, z_m, src_label
 
@@ -1556,6 +1609,58 @@ class VisionPipeline(threading.Thread):
         return False, delta_z, drift
 
     # ── Stabilizer Warning Overlay ────────────────────────────────────────────
+    #: Static text of the calibration overlay: (text, y_ratio, scale_k, BGR, thickness).
+    _CALIB_STATIC_TEXT = (
+        ("!! LID-SHAKE STABILIZATION !!",         0.32, 1.05, (0, 140, 255),   3),
+        ("Please do not move or change position", 0.46, 0.75, (255, 255, 255), 2),
+        ("Press  X  to cancel",                   0.90, 0.50, (140, 140, 140), 1),
+    )
+
+    def _calibration_chrome(self, h: int, w: int) -> dict:
+        """
+        The parts of the calibration overlay that depend only on frame size.
+
+        Built once per resolution and reused. This whole overlay runs in the
+        capture thread on every frame of a 3-second calibration, and it used to
+        allocate a full-frame tint buffer and re-measure four fixed strings each
+        time in order to draw the same pixels in the same places.
+        """
+        cached = self._calib_chrome
+        if cached is not None and cached["size"] == (h, w):
+            return cached
+
+        scale_ref = w / 800.0
+        tint = np.empty((h, w, 3), dtype=np.uint8)
+        tint[:] = (15, 10, 30)                       # deep navy
+
+        placed = []
+        for text, y_ratio, scale_k, color, thick in self._CALIB_STATIC_TEXT:
+            scale = scale_k * scale_ref
+            (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, scale, thick)
+            placed.append((text, (w - tw) // 2, int(h * y_ratio), scale, color, thick))
+
+        bar_w = int(w * 0.60)
+        chrome = {
+            "size":       (h, w),
+            "tint":       tint,
+            "scale_ref":  scale_ref,
+            "secs_scale": 0.65 * scale_ref,
+            "secs_y":     int(h * 0.58),
+            "static":     placed,
+            "bar":        ((w - bar_w) // 2, int(h * 0.68), bar_w, int(14 * scale_ref)),
+            "ring":       (w // 2, int(h * 0.80), int(28 * scale_ref)),
+        }
+        self._calib_chrome = chrome
+        return chrome
+
+    @staticmethod
+    def _calib_text(frame, text, tx, ty, scale, color, thick):
+        """Centred DUPLEX text with the overlay's drop-shadow."""
+        cv2.putText(frame, text, (tx + 2, ty + 2),
+                    cv2.FONT_HERSHEY_DUPLEX, scale, (0, 0, 0), thick + 2)
+        cv2.putText(frame, text, (tx, ty),
+                    cv2.FONT_HERSHEY_DUPLEX, scale, color, thick)
+
     def _draw_stabilizer_warning(self, frame: np.ndarray, progress: float) -> np.ndarray:
         """
         Draw a full-screen warning overlay onto the BGR frame during stabilization
@@ -1568,45 +1673,25 @@ class VisionPipeline(threading.Thread):
         progress : float       calibration progress 0.0 → 1.0
         """
         h, w = frame.shape[:2]
+        chrome = self._calibration_chrome(h, w)
 
         # ── 1. Dark semi-transparent wash ────────────────────────────────────
-        overlay = np.zeros((h, w, 3), dtype=np.uint8)
-        overlay[:] = (15, 10, 30)                    # deep navy tint
-        frame = cv2.addWeighted(frame, 0.22, overlay, 0.78, 0)
+        frame = cv2.addWeighted(frame, 0.22, chrome["tint"], 0.78, 0)
 
         # ── 2. Text blocks ───────────────────────────────────────────────────
-        scale_ref = w / 800.0
+        for text, tx, ty, scale, color, thick in chrome["static"]:
+            self._calib_text(frame, text, tx, ty, scale, color, thick)
 
-        header_text  = "!! LID-SHAKE STABILIZATION !!"
-        message_text = "Please do not move or change position"
-        secs_text    = f"Calibrating...  {self.tof_stabilizer.time_remaining:.1f}s remaining"
-        hint_text    = "Press  X  to cancel"
-
-        text_specs = [
-            # (text,          y_ratio, font_scale,        color BGR,          thickness)
-            (header_text,    0.32,    1.05 * scale_ref,  (0, 140, 255),      3),
-            (message_text,   0.46,    0.75 * scale_ref,  (255, 255, 255),    2),
-            (secs_text,      0.58,    0.65 * scale_ref,  (0, 220, 200),      2),
-            (hint_text,      0.90,    0.50 * scale_ref,  (140, 140, 140),    1),
-        ]
-
-        for text, y_ratio, scale, color, thick in text_specs:
-            (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, scale, thick)
-            tx = (w - tw) // 2
-            ty = int(h * y_ratio)
-            # Drop-shadow
-            cv2.putText(frame, text, (tx + 2, ty + 2),
-                        cv2.FONT_HERSHEY_DUPLEX, scale, (0, 0, 0), thick + 2)
-            cv2.putText(frame, text, (tx, ty),
-                        cv2.FONT_HERSHEY_DUPLEX, scale, color, thick)
+        # The only line whose width changes frame to frame, so the only one
+        # still worth measuring here.
+        secs_text = f"Calibrating...  {self.tof_stabilizer.time_remaining:.1f}s remaining"
+        scale = chrome["secs_scale"]
+        (tw, _), _ = cv2.getTextSize(secs_text, cv2.FONT_HERSHEY_DUPLEX, scale, 2)
+        self._calib_text(frame, secs_text, (w - tw) // 2, chrome["secs_y"],
+                         scale, (0, 220, 200), 2)
 
         # ── 3. Progress bar ──────────────────────────────────────────────────
-        bar_w  = int(w * 0.60)
-        bar_h  = int(14 * scale_ref)
-        bar_x  = (w - bar_w) // 2
-        bar_y  = int(h * 0.68)
-        radius = max(1, bar_h // 2)
-
+        bar_x, bar_y, bar_w, bar_h = chrome["bar"]
         cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
                       (50, 50, 60), -1)
         fill_w = int(bar_w * progress)
@@ -1615,12 +1700,9 @@ class VisionPipeline(threading.Thread):
                           (bar_x + fill_w, bar_y + bar_h), (0, 180, 255), -1)
         cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
                       (100, 100, 110), 1)
-        _ = radius   # suppress unused warning
 
         # ── 4. Countdown ring ────────────────────────────────────────────────
-        cx     = w // 2
-        cy     = int(h * 0.80)
-        ring_r = int(28 * scale_ref)
+        cx, cy, ring_r = chrome["ring"]
         angle_end = int(360 * progress)             # arc sweeps 0 → 360 as time passes
 
         cv2.circle(frame, (cx, cy), ring_r, (55, 55, 65), 3)

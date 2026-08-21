@@ -1,9 +1,11 @@
 """
-test_3d_character_options.py — Verification test for Visual AI Engine 3D character primitives and factors.
+test_3d_character_options.py — verification of the engine's 3D character
+primitives and factors.
 """
 
-import sys
 import os
+import sys
+
 import numpy as np
 
 # Ensure the visual_ai package is importable.
@@ -15,7 +17,8 @@ src_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src'))
 if src_root not in sys.path:
     sys.path.insert(0, src_root)
 
-from visual_ai import Renderer3D, Mesh3D, Transform3D, Camera3D, Material
+from visual_ai import Camera3D, Material, Mesh3D, Renderer3D, Transform3D
+
 
 def test_engine_3d_options():
     print("[TEST] Initializing Camera and Renderer...")

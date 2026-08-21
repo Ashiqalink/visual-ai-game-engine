@@ -24,16 +24,15 @@ calibration window completes in microseconds and results are reproducible.
 
 from __future__ import annotations
 
-import numpy as np
-
-from harness import BenchResult, Scenario, bootstrap, fake_clock, quiet
 import metrics
+import numpy as np
 import signals
+from harness import BenchResult, Scenario, bootstrap, fake_clock, quiet
 
 _MODULES = bootstrap()
 
-import visual_ai.tof_stabilizer as tof_mod            # noqa: E402
-from visual_ai.tof_stabilizer import ToFStabilizer    # noqa: E402
+import visual_ai.tof_stabilizer as tof_mod  # noqa: E402
+from visual_ai.tof_stabilizer import ToFStabilizer  # noqa: E402
 
 FPS = signals.FPS
 DT = signals.DT
@@ -113,7 +112,8 @@ def scenario_calibration() -> Scenario:
                max_value=2.0, detail="true resting depth 450.0 mm")
     scen.check("noise estimate error", abs(stab.z_noise_amplitude - true_sigma) * MM,
                "mm", max_value=1.0,
-               detail=f"measured {stab.z_noise_amplitude * MM:.2f} vs true {true_sigma * MM:.2f} mm")
+                detail=f"measured {stab.z_noise_amplitude * MM:.2f} "
+                       f"vs true {true_sigma * MM:.2f} mm")
     scen.check("gate width", stab.noise_gate * MM, "mm", min_value=2.0, max_value=20.0,
                detail=f"gate_k={stab.gate_k} x noise")
     scen.check("progress complete", stab.progress, "", min_value=1.0)
@@ -318,7 +318,8 @@ def scenario_invalid_readings() -> Scenario:
     """Zeros and NaNs mid-stream must pass through without poisoning the baseline."""
     scen = Scenario(
         name="invalid readings survive",
-        description="An active stabilizer fed 0.0 / NaN must pass them through and keep its baseline.",
+        description="An active stabilizer fed 0.0 / NaN must pass them "
+                    "through and keep its baseline.",
     )
     stab, truth, raw = _calibrated(*signals.tof_rest(n=300, depth=0.45))
     baseline_before = stab.z_baseline

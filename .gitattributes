@@ -1,0 +1,17 @@
+# Normalise text in the repo; check out native line endings. The repo's blobs
+# were already LF (core.autocrlf had been doing the work) - this just writes
+# the policy down so a client with autocrlf=false cannot start committing CRLF.
+* text=auto
+*.py text
+*.cpp text
+*.hpp text
+*.md text
+*.toml text
+*.ini text
+*.txt text
+
+# Binaries, never touched.
+*.pyd binary
+*.png binary
+*.task binary
+*.npz binary

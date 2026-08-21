@@ -187,6 +187,22 @@ void GameEngine::update(float dt) {
             d.active = false;
         }
     }
+
+    // Compact: drop what this frame deactivated. Nothing ever reactivates a
+    // block or a debris particle, so an inactive entry is dead weight that
+    // every later frame would still iterate and get_blocks()/get_debris()
+    // would still hand to the renderer - debris in particular accumulated
+    // without bound over a session. Mirrored in fallback_engine.update();
+    // positional indexes into either list do not survive this, which is why
+    // it waited for approval.
+    m_blocks.erase(
+        std::remove_if(m_blocks.begin(), m_blocks.end(),
+                       [](const Block& block) { return !block.active; }),
+        m_blocks.end());
+    m_debris.erase(
+        std::remove_if(m_debris.begin(), m_debris.end(),
+                       [](const Debris& debris) { return !debris.active; }),
+        m_debris.end());
 }
 
 } // namespace vision_engine

@@ -14,7 +14,6 @@ Pins down, in particular:
     filter's phase lag, so the two must not be the same signal.
 """
 
-import math
 import queue
 import unittest
 
@@ -237,6 +236,44 @@ class TestSlotAssignment(unittest.TestCase):
         for _ in range(16):
             p._process_frame(_frame())
         self.assertEqual(p._slot_anchor, [None, None])
+
+
+class TestFilterTuningReachesEverySlot(unittest.TestCase):
+    """
+    Retuning used to walk `self._gs` only, so a second hand kept the settings it
+    was constructed with: `set_smooth_alpha` visibly steadied one hand and left
+    the other jittering, with nothing in the payload to say why.
+    """
+
+    def _filters(self, p):
+        return [f for gs in p._gs_slots
+                for f in (gs.index_filter, gs.centroid_filter)]
+
+    def test_set_filter_tuning_reaches_slots_past_zero(self):
+        p = _pipeline(max_hands=3)
+        p.set_filter_tuning(min_cutoff=4.5, beta=0.02)
+        for f in self._filters(p):
+            self.assertAlmostEqual(f.min_cutoff, 4.5)
+            self.assertAlmostEqual(f.beta, 0.02)
+
+    def test_set_smooth_alpha_reaches_slots_past_zero(self):
+        p = _pipeline(max_hands=3)
+        p.set_smooth_alpha(0.15)
+        expected = p.filter_min_cutoff
+        for f in self._filters(p):
+            self.assertAlmostEqual(f.min_cutoff, expected)
+
+    def test_tuning_does_not_reset_filter_state(self):
+        """The point of tuning in place is that live histories survive it."""
+        p = _pipeline(max_hands=2)
+        p._mp_face = None
+        p._mp_hands = _FakeHands([_HandResults([_hand(cx=0.4)]) for _ in range(4)])
+        for _ in range(4):
+            p._process_frame(_frame())
+        before = p._gs.smooth_ix
+        p.set_filter_tuning(min_cutoff=2.0)
+        self.assertEqual(p._gs.smooth_ix, before)
+        self.assertTrue(p._gs.index_filter.initialized)
 
 
 _DT = 1.0 / 30.0     # step the clock at capture rate, not at loop speed

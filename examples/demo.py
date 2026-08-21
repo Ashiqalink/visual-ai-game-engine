@@ -3,22 +3,24 @@ Visual AI Game Engine - Developer Demo Example
 Demonstrates how game developers import and use the visual_ai library.
 """
 
-import time
 import queue
+import time
+
 import cv2
 import numpy as np
 
-from visual_ai import VisionPipeline, GameEngine, CPP_ENGINE_AVAILABLE
+from visual_ai import CPP_ENGINE_AVAILABLE, GameEngine, VisionPipeline
 
 
 def main():
     WIDTH, HEIGHT = 800, 600
 
-    print(f"[Demo] C++ Core Acceleration: {'Enabled' if CPP_ENGINE_AVAILABLE else 'Disabled (Fallback)'}")
+    print(f"[Demo] C++ Core Acceleration: "
+          f"{'Enabled' if CPP_ENGINE_AVAILABLE else 'Disabled (Fallback)'}")
 
     # Initialize Engine (C++ if built, fallback otherwise)
     engine = GameEngine(float(WIDTH), float(HEIGHT))
-    
+
     # Spawn a few blocks for demonstration
     engine.add_block(200, HEIGHT - 30, 40, 60, 100.0)
     engine.add_block(240, HEIGHT - 30, 40, 60, 100.0)
@@ -97,18 +99,23 @@ def main():
             # Draw Blocks
             for block in engine.get_blocks():
                 if block.active:
-                    bx_b, by_b, bw, bh = int(block.x), int(block.y), int(block.width), int(block.height)
-                    cv2.rectangle(render_canvas, (bx_b - bw//2, by_b - bh//2), (bx_b + bw//2, by_b + bh//2), (0, 150, 200), -1)
-                    cv2.rectangle(render_canvas, (bx_b - bw//2, by_b - bh//2), (bx_b + bw//2, by_b + bh//2), (0, 50, 100), 2)
-                    
+                    bx_b, by_b = int(block.x), int(block.y)
+                    bw, bh = int(block.width), int(block.height)
+                    cv2.rectangle(render_canvas, (bx_b - bw//2, by_b - bh//2),
+                                  (bx_b + bw//2, by_b + bh//2), (0, 150, 200), -1)
+                    cv2.rectangle(render_canvas, (bx_b - bw//2, by_b - bh//2),
+                                  (bx_b + bw//2, by_b + bh//2), (0, 50, 100), 2)
+
             # Draw Debris
             for d in engine.get_debris():
                 if d.active:
                     dx, dy, dw, dh = int(d.x), int(d.y), int(d.width), int(d.height)
                     alpha = max(0.0, min(1.0, d.lifespan / 3.0))
                     color = (0, int(100 * alpha), int(200 * alpha))
-                    cv2.rectangle(render_canvas, (dx - dw//2, dy - dh//2), (dx + dw//2, dy + dh//2), color, -1)
-                    cv2.rectangle(render_canvas, (dx - dw//2, dy - dh//2), (dx + dw//2, dy + dh//2), (0, 50, 100), 1)
+                    cv2.rectangle(render_canvas, (dx - dw//2, dy - dh//2),
+                                  (dx + dw//2, dy + dh//2), color, -1)
+                    cv2.rectangle(render_canvas, (dx - dw//2, dy - dh//2),
+                                  (dx + dw//2, dy + dh//2), (0, 50, 100), 1)
 
             # Draw Physics Sprite (Ball)
             bx, by = int(engine.get_x()), int(engine.get_y())

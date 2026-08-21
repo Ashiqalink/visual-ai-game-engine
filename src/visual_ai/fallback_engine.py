@@ -1,14 +1,32 @@
+"""
+Pure-Python mirror of the C++ core in ``src/engine.cpp``.
+
+`visual_ai.GameEngine` is whichever of the two loaded: `engine_core` when a
+compiled .pyd sits next to the package, this module otherwise. Consumers never
+branch on it, so anything a game can observe must behave identically on both -
+same physics constants, same integration order, even the same sqrt (E7 kept
+`math.sqrt` over `math.hypot` here because `engine.cpp` uses
+``std::sqrt(dx*dx+dy*dy)`` and bit-parity is what makes the fallback safe to
+swap in).
+
+**Any physics change must be mirrored in ``src/engine.cpp`` and the extension
+rebuilt** (`python setup.py build_ext --inplace`), then checked with
+``tests/test_engine_parity.py``, which runs every assertion against both
+engines. The known, accepted drift is cosmetic: debris-spawn RNG (C++
+quantized in 0.02 steps vs Python continuous).
+"""
+
 import math
-import numpy as np
-from dataclasses import dataclass, field
 import random
-from typing import List, Optional, Any
+from dataclasses import dataclass, field
+from typing import Any
+
 from visual_ai.material import Material
 
 
 @dataclass
 class Entity:
-    """General-purpose game engine entity representing an in-world object with transform, velocity, and material."""
+    """An in-world object with transform, velocity, and material."""
     id: int
     name: str = "Entity"
     x: float = 0.0
@@ -28,7 +46,7 @@ class Entity:
     depth: float = 1.0
     active: bool = True
     material: Material = field(default_factory=Material)
-    mesh: Optional[Any] = None
+    mesh: Any | None = None
 
 
 
@@ -59,7 +77,7 @@ class Debris:
     material: Material = field(default_factory=Material)
 
 
-def _coerce_material(material: Optional[Material]) -> Material:
+def _coerce_material(material: Material | None) -> Material:
     """
     Resolve a ``material=`` argument the way the C++ binding does.
 
@@ -79,7 +97,8 @@ def _coerce_material(material: Optional[Material]) -> Material:
 
 class PythonFallbackEngine:
     """
-    Pure Python fallback physics and scene engine used when C++ engine_core extension is not compiled.
+    Pure Python fallback physics and scene engine, used when the C++
+    engine_core extension is not compiled.
     Supports general Entity objects with PBR Materials as well as legacy Block/Debris components.
     """
     def __init__(self, width: float = 800.0, height: float = 600.0):
@@ -93,9 +112,9 @@ class PythonFallbackEngine:
         self.radius = 25.0
         self.target_x = width / 2.0
         self.target_y = height / 2.0
-        self.blocks: List[Block] = []
-        self.debris: List[Debris] = []
-        self.entities: List[Entity] = []
+        self.blocks: list[Block] = []
+        self.debris: list[Debris] = []
+        self.entities: list[Entity] = []
         self._next_entity_id: int = 1
 
     def set_target_position(self, x: float, y: float):
@@ -114,10 +133,10 @@ class PythonFallbackEngine:
         width: float = 1.0,
         height: float = 1.0,
         depth: float = 1.0,
-        material: Optional[Material] = None,
-        w: Optional[float] = None,
-        h: Optional[float] = None,
-        d: Optional[float] = None,
+        material: Material | None = None,
+        w: float | None = None,
+        h: float | None = None,
+        d: float | None = None,
     ) -> Entity:
         """
         Add a general-purpose Entity to the game world.
@@ -171,8 +190,8 @@ class PythonFallbackEngine:
         vry: float = 0.0,
         vrz: float = 0.0,
         scale: float = 1.0,
-        material: Optional[Material] = None,
-        mesh: Optional[Any] = None,
+        material: Material | None = None,
+        mesh: Any | None = None,
     ) -> Entity:
         """Add a 3D Element entity to the engine scene."""
         ent_id = self._next_entity_id
@@ -203,7 +222,7 @@ class PythonFallbackEngine:
         self.entities.append(entity)
         return entity
 
-    def get_entities(self) -> List[Entity]:
+    def get_entities(self) -> list[Entity]:
         """Get all active entities in the engine."""
         return self.entities
 
@@ -211,14 +230,15 @@ class PythonFallbackEngine:
         """Remove all general entities."""
         self.entities.clear()
 
-    def add_block(self, x: float, y: float, w: float, h: float, health: float, material: Optional[Material] = None):
+    def add_block(self, x: float, y: float, w: float, h: float, health: float,
+                  material: Material | None = None):
         mat = _coerce_material(material)
         self.blocks.append(Block(x, y, w, h, health, health, True, mat))
 
-    def get_blocks(self) -> List[Block]:
+    def get_blocks(self) -> list[Block]:
         return self.blocks
 
-    def get_debris(self) -> List[Debris]:
+    def get_debris(self) -> list[Debris]:
         return self.debris
 
     def clear_blocks(self):
@@ -230,7 +250,7 @@ class PythonFallbackEngine:
         self.vy += self.gravity * dt
         dx = self.target_x - self.x
         dy = self.target_y - self.y
-        dist = float(np.sqrt(dx * dx + dy * dy))
+        dist = math.sqrt(dx * dx + dy * dy)
         if dist > 1.0:
             pull_strength = 150.0
             self.vx += (dx / dist) * pull_strength * dt
@@ -279,7 +299,7 @@ class PythonFallbackEngine:
 
             distObjX = self.x - closestX
             distObjY = self.y - closestY
-            distance = float(np.sqrt(distObjX * distObjX + distObjY * distObjY))
+            distance = math.sqrt(distObjX * distObjX + distObjY * distObjY)
 
             if distance < self.radius:
                 if distance > 0:
@@ -289,7 +309,7 @@ class PythonFallbackEngine:
                     self.x = closestX + nx * self.radius
                     self.y = closestY + ny * self.radius
 
-                    impact = float(np.sqrt(self.vx * self.vx + self.vy * self.vy))
+                    impact = math.sqrt(self.vx * self.vx + self.vy * self.vy)
                     dotProduct = self.vx * nx + self.vy * ny
 
                     if dotProduct < 0:
@@ -340,6 +360,17 @@ class PythonFallbackEngine:
 
             if d.lifespan <= 0.0:
                 d.active = False
+
+        # Compact: drop what this frame deactivated. Nothing ever reactivates
+        # a block or a debris particle, so an inactive entry is dead weight
+        # every later frame would still iterate - debris in particular
+        # accumulated without bound over a session. Mirrors engine.cpp.
+        # Slice-assign rather than rebind: get_blocks()/get_debris() hand out
+        # the lists themselves, and the C++ engine compacts its vectors in
+        # place, so a list reference a consumer already holds must keep
+        # working the same way on both engines.
+        self.blocks[:] = [block for block in self.blocks if block.active]
+        self.debris[:] = [debris for debris in self.debris if debris.active]
 
     def get_x(self) -> float: return self.x
     def get_y(self) -> float: return self.y

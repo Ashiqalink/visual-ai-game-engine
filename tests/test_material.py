@@ -1,4 +1,5 @@
 import unittest
+
 from visual_ai.material import Material, ShaderType
 
 

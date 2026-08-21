@@ -3,18 +3,20 @@ Visual AI Game Engine - Developer Demo Example
 Demonstrates how game developers import and use the visual_ai library.
 """
 
-import time
 import queue
+import time
+
 import cv2
 import numpy as np
 
-from visual_ai import VisionPipeline, GameEngine, CPP_ENGINE_AVAILABLE
+from visual_ai import CPP_ENGINE_AVAILABLE, GameEngine, VisionPipeline
 
 
 def main():
     WIDTH, HEIGHT = 800, 600
 
-    print(f"[Demo] C++ Core Acceleration: {'Enabled' if CPP_ENGINE_AVAILABLE else 'Disabled (Fallback)'}")
+    print(f"[Demo] C++ Core Acceleration: "
+          f"{'Enabled' if CPP_ENGINE_AVAILABLE else 'Disabled (Fallback)'}")
 
     # Initialize Engine (C++ if built, fallback otherwise)
     engine = GameEngine(float(WIDTH), float(HEIGHT))

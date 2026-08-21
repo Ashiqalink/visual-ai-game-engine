@@ -6,15 +6,17 @@ Contains pure game-agnostic mathematical operations:
   • Viewport & camera frame coordinate conversion
   • Vector2 & Vector3 operations (dot, cross, distance, angle_between, reflect)
   • Interpolation & Easing curves (lerp, slerp, ease_in_quad, spring, etc.)
-  • Kinematics & Physics primitives (Euler integration, drag, AABB & Circle collisions, trajectory prediction)
+  • Kinematics & Physics primitives (Euler integration, drag, AABB & Circle
+    collisions, trajectory prediction)
   • Fixed-timestep update accumulator & Tween progress manager
   • Seeded RNG, weighted random selection, and noise utilities
 """
 
 import math
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Tuple, List, TypeVar, Sequence, Optional
+from typing import TypeVar
 
 T = TypeVar("T")
 
@@ -30,18 +32,16 @@ class Vector2:
         return math.sqrt(self.x * self.x + self.y * self.y)
 
     def normalize(self) -> "Vector2":
-        l = self.length()
-        if l < 1e-9:
+        length = self.length()
+        if length < 1e-9:
             return Vector2(0.0, 0.0)
-        return Vector2(self.x / l, self.y / l)
+        return Vector2(self.x / length, self.y / length)
 
     def dot(self, other: "Vector2") -> float:
         return self.x * other.x + self.y * other.y
 
     def distance_to(self, other: "Vector2") -> float:
-        dx = self.x - other.x
-        dy = self.y - other.y
-        return math.sqrt(dx * dx + dy * dy)
+        return math.hypot(self.x - other.x, self.y - other.y)
 
     def angle_between(self, other: "Vector2") -> float:
         """Return angle between vectors in radians [0, pi]."""
@@ -56,7 +56,7 @@ class Vector2:
         d = self.dot(n)
         return Vector2(self.x - 2.0 * d * n.x, self.y - 2.0 * d * n.y)
 
-    def to_tuple(self) -> Tuple[float, float]:
+    def to_tuple(self) -> tuple[float, float]:
         return (self.x, self.y)
 
 
@@ -70,10 +70,10 @@ class Vector3:
         return math.sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
 
     def normalize(self) -> "Vector3":
-        l = self.length()
-        if l < 1e-9:
+        length = self.length()
+        if length < 1e-9:
             return Vector3(0.0, 0.0, 0.0)
-        return Vector3(self.x / l, self.y / l, self.z / l)
+        return Vector3(self.x / length, self.y / length, self.z / length)
 
     def dot(self, other: "Vector3") -> float:
         return self.x * other.x + self.y * other.y + self.z * other.z
@@ -86,12 +86,9 @@ class Vector3:
         )
 
     def distance_to(self, other: "Vector3") -> float:
-        dx = self.x - other.x
-        dy = self.y - other.y
-        dz = self.z - other.z
-        return math.sqrt(dx * dx + dy * dy + dz * dz)
+        return math.hypot(self.x - other.x, self.y - other.y, self.z - other.z)
 
-    def to_tuple(self) -> Tuple[float, float, float]:
+    def to_tuple(self) -> tuple[float, float, float]:
         return (self.x, self.y, self.z)
 
 
@@ -105,7 +102,7 @@ class Transform2D:
     scale_x: float = 1.0
     scale_y: float = 1.0
 
-    def apply(self, point: Tuple[float, float]) -> Tuple[float, float]:
+    def apply(self, point: tuple[float, float]) -> tuple[float, float]:
         px, py = point
         # Scale
         px *= self.scale_x
@@ -139,10 +136,10 @@ def map_range(
 
 
 def remap_camera_roi_to_game(
-    point: Tuple[float, float],
-    src_bounds: Tuple[float, float, float, float],
-    dst_bounds: Tuple[float, float, float, float],
-) -> Tuple[float, float]:
+    point: tuple[float, float],
+    src_bounds: tuple[float, float, float, float],
+    dst_bounds: tuple[float, float, float, float],
+) -> tuple[float, float]:
     """
     Remap (x, y) coordinates from vision camera ROI bounds (src_x, src_y, src_w, src_h)
     to gameplay screen/viewport bounds (dst_x, dst_y, dst_w, dst_h).
@@ -162,10 +159,10 @@ def lerp(a: float, b: float, t: float) -> float:
 
 
 def slerp_quaternion(
-    q1: Tuple[float, float, float, float],
-    q2: Tuple[float, float, float, float],
+    q1: tuple[float, float, float, float],
+    q2: tuple[float, float, float, float],
     t: float,
-) -> Tuple[float, float, float, float]:
+) -> tuple[float, float, float, float]:
     """Spherical linear interpolation between unit quaternions q1 and q2."""
     t = max(0.0, min(1.0, t))
     w1, x1, y1, z1 = q1
@@ -184,8 +181,8 @@ def slerp_quaternion(
             y1 + t * (y2 - y1),
             z1 + t * (z2 - z1),
         )
-        l = math.sqrt(sum(v * v for v in res))
-        return (res[0] / l, res[1] / l, res[2] / l, res[3] / l)
+        length = math.sqrt(sum(v * v for v in res))
+        return (res[0] / length, res[1] / length, res[2] / length, res[3] / length)
 
     theta_0 = math.acos(dot)
     theta = theta_0 * t
@@ -230,7 +227,7 @@ def spring(t: float, stiffness: float = 100.0, damping: float = 10.0) -> float:
 
 def integrate_euler(
     pos: Vector2, vel: Vector2, accel: Vector2, dt: float
-) -> Tuple[Vector2, Vector2]:
+) -> tuple[Vector2, Vector2]:
     """Integrate velocity and position using standard Euler integration."""
     new_vel = Vector2(vel.x + accel.x * dt, vel.y + accel.y * dt)
     new_pos = Vector2(pos.x + new_vel.x * dt, pos.y + new_vel.y * dt)
@@ -247,8 +244,8 @@ def calculate_drag_force(velocity: Vector2, drag_coeff: float) -> Vector2:
 
 
 def intersect_aabb_aabb(
-    box1: Tuple[float, float, float, float],
-    box2: Tuple[float, float, float, float],
+    box1: tuple[float, float, float, float],
+    box2: tuple[float, float, float, float],
 ) -> bool:
     """AABB collision test for (x, y, width, height) boxes centered at (x,y)."""
     x1, y1, w1, h1 = box1
@@ -260,8 +257,8 @@ def intersect_aabb_aabb(
 
 
 def intersect_circle_circle(
-    c1: Tuple[float, float, float],
-    c2: Tuple[float, float, float],
+    c1: tuple[float, float, float],
+    c2: tuple[float, float, float],
 ) -> bool:
     """Circle collision test for (x, y, radius)."""
     dx = c1[0] - c2[0]
@@ -271,8 +268,8 @@ def intersect_circle_circle(
 
 
 def intersect_circle_aabb(
-    circle: Tuple[float, float, float],
-    aabb: Tuple[float, float, float, float],
+    circle: tuple[float, float, float],
+    aabb: tuple[float, float, float, float],
 ) -> bool:
     """Circle (cx, cy, r) vs AABB (bx, by, bw, bh centered at bx,by) collision test."""
     cx, cy, r = circle
@@ -285,12 +282,12 @@ def intersect_circle_aabb(
 
 
 def predict_projectile_trajectory(
-    start_pos: Tuple[float, float],
-    initial_vel: Tuple[float, float],
+    start_pos: tuple[float, float],
+    initial_vel: tuple[float, float],
     gravity: float = 9.81,
     time_step: float = 0.05,
     num_steps: int = 30,
-) -> List[Tuple[float, float]]:
+) -> list[tuple[float, float]]:
     """Generate array of trajectory arc points (x, y) over time under gravity."""
     points = []
     x, y = start_pos
@@ -364,7 +361,7 @@ class SeededRNG:
     def range(self, min_val: float, max_val: float) -> float:
         return min_val + (max_val - min_val) * self._rng.random()
 
-    def choice(self, options: Sequence[T], weights: Optional[Sequence[float]] = None) -> T:
+    def choice(self, options: Sequence[T], weights: Sequence[float] | None = None) -> T:
         if weights is not None:
             return self._rng.choices(options, weights=weights, k=1)[0]
         return self._rng.choice(options)

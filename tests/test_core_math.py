@@ -1,32 +1,27 @@
-import math
 import unittest
+
 from visual_ai import (
+    FixedTimestepAccumulator,
+    GenericStreamFilter,
+    SeededRNG,
+    Transform2D,
+    Tween,
     Vector2,
     Vector3,
-    Transform2D,
-    map_range,
-    remap_camera_roi_to_game,
-    lerp,
-    slerp_quaternion,
     ease_in_quad,
     ease_out_quad,
-    spring,
-    integrate_euler,
-    calculate_drag_force,
-    intersect_aabb_aabb,
-    intersect_circle_circle,
-    intersect_circle_aabb,
-    predict_projectile_trajectory,
-    FixedTimestepAccumulator,
-    Tween,
-    SeededRNG,
-    weighted_choice,
-    perlin_noise_1d,
-    get_landmark_distance,
     get_finger_angle,
     get_hand_center_and_radius,
+    get_landmark_distance,
     get_landmark_velocity,
-    GenericStreamFilter,
+    integrate_euler,
+    intersect_aabb_aabb,
+    intersect_circle_aabb,
+    intersect_circle_circle,
+    lerp,
+    perlin_noise_1d,
+    predict_projectile_trajectory,
+    remap_camera_roi_to_game,
 )
 
 
@@ -91,7 +86,8 @@ class TestEngineCoreMath(unittest.TestCase):
 
         self.assertTrue(intersect_circle_aabb((5, 5, 2), (0, 0, 10, 10)))
 
-        traj = predict_projectile_trajectory((0.0, 0.0), (10.0, -10.0), gravity=9.81, time_step=0.1, num_steps=5)
+        traj = predict_projectile_trajectory((0.0, 0.0), (10.0, -10.0),
+                                             gravity=9.81, time_step=0.1, num_steps=5)
         self.assertEqual(len(traj), 5)
 
     def test_fixed_timestep_accumulator(self):

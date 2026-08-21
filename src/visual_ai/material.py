@@ -2,9 +2,9 @@
 Material and Shader Pipeline components for Visual AI Game Engine.
 """
 
+from dataclasses import dataclass
 from enum import Enum
-from dataclasses import dataclass, field
-from typing import Dict, Any, Tuple
+from typing import Any
 
 
 class ShaderType(Enum):
@@ -33,11 +33,11 @@ class Material:
     """
     name: str = "DefaultMaterial"
     shader_type: ShaderType = ShaderType.PBR_STANDARD
-    base_color: Tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
+    base_color: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
     normal_map: str = ""
     roughness: float = 0.5
     metallic: float = 0.0
-    emission: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    emission: tuple[float, float, float] = (0.0, 0.0, 0.0)
     opacity: float = 1.0
 
     def __post_init__(self):
@@ -48,7 +48,7 @@ class Material:
         self.metallic = max(0.0, min(1.0, float(self.metallic)))
         self.opacity = max(0.0, min(1.0, float(self.opacity)))
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize material to dictionary."""
         return {
             "name": self.name,
@@ -62,7 +62,7 @@ class Material:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Material":
+    def from_dict(cls, data: dict[str, Any]) -> "Material":
         """Deserialize material from dictionary."""
         return cls(
             name=data.get("name", "DefaultMaterial"),
@@ -75,7 +75,7 @@ class Material:
             opacity=data.get("opacity", 1.0),
         )
 
-    def to_shader_uniforms(self) -> Dict[str, Any]:
+    def to_shader_uniforms(self) -> dict[str, Any]:
         """Convert material parameters into GLSL / GPU shader uniform layout."""
         return {
             "u_BaseColor": list(self.base_color),

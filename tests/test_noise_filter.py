@@ -5,12 +5,13 @@ test_noise_filter.py — Unit tests for NoiseFilter, FilteredGestureDetector, an
 import random
 import time
 import unittest
+
 from visual_ai.noise_filter import (
-    NoiseFilter,
     FilteredGestureDetector,
-    PipelineNoiseFilter,
     GenericStreamFilter,
+    NoiseFilter,
     OneEuroFilter,
+    PipelineNoiseFilter,
     ema_alpha_to_cutoff,
 )
 
@@ -141,6 +142,33 @@ class TestNoiseFilter(unittest.TestCase):
 
     def test_none_payload_passes_through(self):
         self.assertIsNone(PipelineNoiseFilter(noise_duration=1.0).process_payload(None))
+
+    def test_closed_window_does_not_copy_the_payload(self):
+        """
+        The filter ships off, so the closed-window path runs on every frame of
+        every session. Copying a ~55-key dict to change nothing in it was the
+        whole per-frame cost; the payload is handed straight back instead.
+        """
+        payload = {"is_pinching": True, "z_delta": 0.05}
+
+        # noise_duration <= 0 is the shipped default: permanently shut.
+        self.assertIs(PipelineNoiseFilter(noise_duration=0.0).process_payload(payload),
+                      payload)
+
+        # A window that has expired behaves the same way.
+        pnf = PipelineNoiseFilter(noise_duration=0.05)
+        self.assertIsNot(pnf.process_payload(payload), payload)   # still open
+        time.sleep(0.1)
+        self.assertIs(pnf.process_payload(payload), payload)      # now shut
+
+    def test_open_window_still_copies(self):
+        """Suppression must not reach back into the pipeline's own dict."""
+        pnf = PipelineNoiseFilter(noise_duration=2.0)
+        payload = {"is_pinching": True, "z_delta": 0.05}
+        filtered = pnf.process_payload(payload)
+        self.assertIsNot(filtered, payload)
+        self.assertTrue(payload["is_pinching"])
+        self.assertFalse(filtered["is_pinching"])
 
 
 class TestGenericStreamFilter(unittest.TestCase):
