@@ -340,6 +340,17 @@ class PythonFallbackEngine:
             if d.lifespan <= 0.0:
                 d.active = False
 
+        # Compact: drop what this frame deactivated. Nothing ever reactivates
+        # a block or a debris particle, so an inactive entry is dead weight
+        # every later frame would still iterate - debris in particular
+        # accumulated without bound over a session. Mirrors engine.cpp.
+        # Slice-assign rather than rebind: get_blocks()/get_debris() hand out
+        # the lists themselves, and the C++ engine compacts its vectors in
+        # place, so a list reference a consumer already holds must keep
+        # working the same way on both engines.
+        self.blocks[:] = [block for block in self.blocks if block.active]
+        self.debris[:] = [debris for debris in self.debris if debris.active]
+
     def get_x(self) -> float: return self.x
     def get_y(self) -> float: return self.y
     def get_target_x(self) -> float: return self.target_x

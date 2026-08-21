@@ -196,5 +196,84 @@ class TestScalarStateParity(unittest.TestCase):
                 self.assertAlmostEqual(engine.y, 300.0, places=4)
 
 
+def _smash_first_block(engine):
+    """
+    Drive the ball through the block at (330, 300), deterministically.
+
+    Gravity off, no target pull (the target sits on the ball, inside the
+    1 px dead zone), and a 200 px/s ball touching the block already - so the
+    first update() collides at impact 200, well over both the 50 damage floor
+    and the block's 1.0 health. dt is tiny so integration moves nothing.
+    """
+    engine.gravity = 0.0
+    engine.radius = 25.0
+    engine.x, engine.y = 300.0, 300.0
+    engine.vx, engine.vy = 200.0, 0.0
+    engine.set_target_position(300.0, 300.0)
+    engine.update(1e-6)
+
+
+class TestInactiveEntriesAreCompacted(unittest.TestCase):
+    """
+    update() drops what it deactivated, on both engines.
+
+    Nothing ever reactivates a block or a debris particle, so inactive
+    entries were dead weight: every frame iterated them, and get_blocks() /
+    get_debris() handed them to the renderer forever - debris accumulated
+    without bound over a session.
+    """
+
+    def test_a_destroyed_block_leaves_the_list(self):
+        for label, factory in ENGINES:
+            with self.subTest(engine=label):
+                engine = factory(800.0, 600.0)
+                engine.add_block(330.0, 300.0, 40.0, 40.0, 1.0)     # dies
+                engine.add_block(700.0, 100.0, 40.0, 40.0, 100.0)   # survives
+                _smash_first_block(engine)
+                remaining = engine.get_blocks()
+                self.assertEqual(len(remaining), 1)
+                self.assertEqual(remaining[0].x, 700.0)
+                self.assertTrue(remaining[0].active)
+
+    def test_debris_spawns_then_expires_out_of_the_list(self):
+        for label, factory in ENGINES:
+            with self.subTest(engine=label):
+                engine = factory(800.0, 600.0)
+                engine.add_block(330.0, 300.0, 40.0, 40.0, 1.0)
+                _smash_first_block(engine)
+                self.assertEqual(len(engine.get_debris()), 4)       # 2x2 grid
+                for _ in range(7):                                  # 3.5 s > 3 s lifespan
+                    engine.update(0.5)
+                self.assertEqual(len(engine.get_debris()), 0)
+
+    def test_every_entry_still_listed_is_active(self):
+        for label, factory in ENGINES:
+            with self.subTest(engine=label):
+                engine = factory(800.0, 600.0)
+                engine.add_block(330.0, 300.0, 40.0, 40.0, 1.0)
+                engine.add_block(700.0, 100.0, 40.0, 40.0, 100.0)
+                _smash_first_block(engine)
+                for _ in range(4):
+                    engine.update(0.5)
+                self.assertTrue(all(b.active for b in engine.get_blocks()))
+                self.assertTrue(all(d.active for d in engine.get_debris()))
+
+    def test_fallback_compacts_the_list_object_itself(self):
+        """
+        The fallback hands out its lists; compaction must mutate them in
+        place (the C++ engine erases within its vectors), not rebind, so a
+        reference a consumer already holds keeps tracking the engine.
+        """
+        engine = PythonFallbackEngine(800.0, 600.0)
+        engine.add_block(330.0, 300.0, 40.0, 40.0, 1.0)
+        held_blocks = engine.get_blocks()
+        held_debris = engine.get_debris()
+        _smash_first_block(engine)
+        self.assertIs(engine.get_blocks(), held_blocks)
+        self.assertIs(engine.get_debris(), held_debris)
+        self.assertEqual(len(held_blocks), 0)
+        self.assertEqual(len(held_debris), 4)
+
+
 if __name__ == "__main__":
     unittest.main()
