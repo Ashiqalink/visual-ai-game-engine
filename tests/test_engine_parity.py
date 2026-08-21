@@ -113,5 +113,88 @@ class TestEngineParity(unittest.TestCase):
                 self.assertEqual(engine.add_3d_element("B").id, 2)
 
 
+#: The engine's own scalar state. The fallback holds these as plain instance
+#: attributes and the bindings expose them as properties; either way a game
+#: reads and assigns them by these names.
+SCALARS = ("x", "y", "vx", "vy", "gravity", "radius",
+           "target_x", "target_y", "width", "height")
+
+
+class TestScalarStateParity(unittest.TestCase):
+    """
+    The engine's own position, velocity and tuning, on both engines.
+
+    The fallback kept all ten as ordinary attributes while the bindings
+    published six getters and no setters at all, so `engine.gravity = 500` -
+    an obvious thing to write against the fallback - raised AttributeError on
+    any machine where the compiled core happened to load instead.
+    """
+
+    def test_every_scalar_reads_the_same_initial_value(self):
+        values = {}
+        for label, factory in ENGINES:
+            with self.subTest(engine=label):
+                engine = factory(800.0, 600.0)
+                for name in SCALARS:
+                    self.assertTrue(hasattr(engine, name),
+                                    f"{label} engine has no {name!r}")
+                values[label] = {n: getattr(engine, n) for n in SCALARS}
+        if len(values) == 2:
+            self.assertEqual(values["fallback"], values["cpp"])
+
+    def test_every_scalar_is_assignable(self):
+        for label, factory in ENGINES:
+            with self.subTest(engine=label):
+                engine = factory(800.0, 600.0)
+                for i, name in enumerate(SCALARS):
+                    setattr(engine, name, 7.5 + i)
+                for i, name in enumerate(SCALARS):
+                    self.assertEqual(getattr(engine, name), 7.5 + i,
+                                     f"{label}: {name} did not take the write")
+
+    def test_getters_still_agree_with_the_properties(self):
+        """The six get_*() methods are the older API and stay bound."""
+        for label, factory in ENGINES:
+            with self.subTest(engine=label):
+                engine = factory(800.0, 600.0)
+                engine.x, engine.y = 11.0, 22.0
+                engine.target_x, engine.target_y = 33.0, 44.0
+                engine.width, engine.height = 55.0, 66.0
+                self.assertEqual(engine.get_x(), 11.0)
+                self.assertEqual(engine.get_y(), 22.0)
+                self.assertEqual(engine.get_target_x(), 33.0)
+                self.assertEqual(engine.get_target_y(), 44.0)
+                self.assertEqual(engine.get_width(), 55.0)
+                self.assertEqual(engine.get_height(), 66.0)
+
+    def test_set_target_position_and_the_properties_are_one_value(self):
+        for label, factory in ENGINES:
+            with self.subTest(engine=label):
+                engine = factory(800.0, 600.0)
+                engine.set_target_position(120.0, 240.0)
+                self.assertEqual((engine.target_x, engine.target_y), (120.0, 240.0))
+                engine.target_x = 5.0
+                self.assertEqual(engine.get_target_x(), 5.0)
+
+    def test_a_written_scalar_changes_what_update_does(self):
+        """
+        The writes reach the physics, not just a shadow copy.
+
+        Zero gravity, no target pull and no horizontal speed leaves the engine
+        exactly where it was put - which is only true if all four assignments
+        landed on the state `update()` reads.
+        """
+        for label, factory in ENGINES:
+            with self.subTest(engine=label):
+                engine = factory(800.0, 600.0)
+                engine.gravity = 0.0
+                engine.vx = engine.vy = 0.0
+                engine.x, engine.y = 300.0, 300.0
+                engine.set_target_position(300.0, 300.0)
+                engine.update(0.5)
+                self.assertAlmostEqual(engine.x, 300.0, places=4)
+                self.assertAlmostEqual(engine.y, 300.0, places=4)
+
+
 if __name__ == "__main__":
     unittest.main()
