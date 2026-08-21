@@ -63,7 +63,7 @@ class Transform3D:
         """
         if len(points) == 0:
             return points.copy()
-        
+
         # Scale
         scaled = points * np.array([self.sx, self.sy, self.sz], dtype=np.float64)
         # Rotate
@@ -109,7 +109,7 @@ class Camera3D:
         Returns None if behind camera near plane.
         """
         px, py, pz = point[0], point[1], point[2]
-        
+
         # Camera-relative translation (assuming camera facing along -Z)
         rel_x = px - self.position[0]
         rel_y = py - self.position[1]

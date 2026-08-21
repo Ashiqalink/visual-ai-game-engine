@@ -20,7 +20,7 @@ def main():
 
     # Initialize Engine (C++ if built, fallback otherwise)
     engine = GameEngine(float(WIDTH), float(HEIGHT))
-    
+
     # Spawn a few blocks for demonstration
     engine.add_block(200, HEIGHT - 30, 40, 60, 100.0)
     engine.add_block(240, HEIGHT - 30, 40, 60, 100.0)
@@ -105,7 +105,7 @@ def main():
                                   (bx_b + bw//2, by_b + bh//2), (0, 150, 200), -1)
                     cv2.rectangle(render_canvas, (bx_b - bw//2, by_b - bh//2),
                                   (bx_b + bw//2, by_b + bh//2), (0, 50, 100), 2)
-                    
+
             # Draw Debris
             for d in engine.get_debris():
                 if d.active:

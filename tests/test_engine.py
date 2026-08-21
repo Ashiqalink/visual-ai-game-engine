@@ -33,7 +33,7 @@ class TestGameEngine(unittest.TestCase):
     def test_entity_management_and_materials(self):
         """Test adding general entities with PBR materials."""
         gold_mat = Material.preset("gold")
-        
+
         # Test Python fallback engine entity adding
         ent_fb = self.fallback.add_entity("PlayerTarget", x=100.0, y=200.0, z=0.0,
                                           material=gold_mat)
