@@ -10,7 +10,8 @@ directly rather than through `VisionPipeline`, since the pipeline's queue
 payload does not carry raw landmarks — only the fixed set of derived fields
 downstream games consume.
 
-    python tools/collect_gesture_samples.py --labels fist,open_palm,point,peace,unknown --out gesture_samples.npz
+    python tools/collect_gesture_samples.py \
+        --labels fist,open_palm,point,peace,unknown --out gesture_samples.npz
 
 Controls
 --------
@@ -39,13 +40,16 @@ except (ImportError, AttributeError):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--labels", required=True,
-                         help="comma-separated label names, in key-press order (1=first, 2=second, ...)")
+                        help="comma-separated label names, in key-press order "
+                             "(1=first, 2=second, ...)")
     parser.add_argument("--out", default="gesture_samples.npz", help="output .npz path")
     parser.add_argument("--camera", type=int, default=0, help="camera index")
     parser.add_argument("--append", action="store_true",
-                         help="load --out first (if it exists) and append to it, instead of starting empty")
+                        help="load --out first (if it exists) and append to it, "
+                             "instead of starting empty")
     args = parser.parse_args()
 
     labels = [s.strip() for s in args.labels.split(",") if s.strip()]
@@ -57,7 +61,8 @@ def main():
         return 1
 
     if mp_hands_module is None:
-        print("[collect] mediapipe is not installed — cannot detect hand landmarks", file=sys.stderr)
+        print("[collect] mediapipe is not installed — cannot detect hand landmarks",
+              file=sys.stderr)
         return 1
 
     features: list[np.ndarray] = []

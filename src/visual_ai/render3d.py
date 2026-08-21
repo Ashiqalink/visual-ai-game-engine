@@ -230,7 +230,8 @@ class Mesh3D:
         return cls(vertices=np.array(verts, dtype=np.float64), faces=faces)
 
     @classmethod
-    def create_cylinder(cls, radius: float = 25.0, height: float = 60.0, segments: int = 12) -> "Mesh3D":
+    def create_cylinder(cls, radius: float = 25.0, height: float = 60.0,
+                        segments: int = 12) -> "Mesh3D":
         """Create a 3D Cylinder mesh."""
         verts = []
         faces = []
@@ -277,7 +278,8 @@ class Mesh3D:
         return cls(vertices=np.array(verts, dtype=np.float64), faces=faces)
 
     @classmethod
-    def create_capsule(cls, radius: float = 20.0, height: float = 40.0, rings: int = 6, sectors: int = 12) -> "Mesh3D":
+    def create_capsule(cls, radius: float = 20.0, height: float = 40.0,
+                       rings: int = 6, sectors: int = 12) -> "Mesh3D":
         """Create a 3D Capsule (pill-shaped) character mesh."""
         verts = []
         faces = []
@@ -308,7 +310,8 @@ class Mesh3D:
         return cls(vertices=np.array(verts, dtype=np.float64), faces=faces)
 
     @classmethod
-    def create_torus(cls, ring_radius: float = 30.0, tube_radius: float = 10.0, ring_segments: int = 16, tube_segments: int = 8) -> "Mesh3D":
+    def create_torus(cls, ring_radius: float = 30.0, tube_radius: float = 10.0,
+                     ring_segments: int = 16, tube_segments: int = 8) -> "Mesh3D":
         """Create a 3D Torus (ring) character mesh."""
         verts = []
         faces = []
@@ -338,7 +341,8 @@ class Mesh3D:
         return cls(vertices=np.array(verts, dtype=np.float64), faces=faces)
 
     @classmethod
-    def create_prism(cls, width: float = 40.0, height: float = 40.0, depth: float = 40.0) -> "Mesh3D":
+    def create_prism(cls, width: float = 40.0, height: float = 40.0,
+                     depth: float = 40.0) -> "Mesh3D":
         """Create a 3D Triangular Prism character mesh."""
         w = width / 2.0
         h = height / 2.0
@@ -400,9 +404,11 @@ class Mesh3D:
 
 class Renderer3D:
     """
-    Software 3D Mesh Renderer for drawing depth-sorted shaded 3D primitives onto OpenCV image frames.
+    Software 3D mesh renderer: depth-sorted, shaded primitives drawn onto
+    OpenCV image frames.
     """
-    def __init__(self, camera: Camera3D | None = None, light_angle_deg: float = 45.0, ambient_intensity: float = 0.45, light_intensity: float = 0.85):
+    def __init__(self, camera: Camera3D | None = None, light_angle_deg: float = 45.0,
+                 ambient_intensity: float = 0.45, light_intensity: float = 0.85):
         self.camera = camera if camera is not None else Camera3D()
         self.ambient_intensity = ambient_intensity
         self.light_intensity = light_intensity
@@ -460,14 +466,17 @@ class Renderer3D:
         for avg_depth, face_indices in render_faces:
             pts = screen_coords[face_indices].astype(np.int32)
 
-            # Backface culling in 2D screen space (skip polygons wound counter-clockwise / facing away)
+            # Backface culling in 2D screen space (skip polygons wound
+            # counter-clockwise / facing away)
             if len(pts) >= 3:
-                cross_z = (pts[1][0] - pts[0][0]) * (pts[2][1] - pts[0][1]) - (pts[1][1] - pts[0][1]) * (pts[2][0] - pts[0][0])
+                cross_z = ((pts[1][0] - pts[0][0]) * (pts[2][1] - pts[0][1])
+                           - (pts[1][1] - pts[0][1]) * (pts[2][0] - pts[0][0]))
                 if cross_z <= 0:
                     continue
 
             if wireframe:
-                cv2.polylines(frame, [pts], isClosed=True, color=bgr, thickness=1, lineType=cv2.LINE_AA)
+                cv2.polylines(frame, [pts], isClosed=True, color=bgr, thickness=1,
+                              lineType=cv2.LINE_AA)
             else:
                 # Flat Shading calculation using normal
                 if len(face_indices) >= 3:
@@ -486,7 +495,9 @@ class Renderer3D:
 
                     # Directional diffuse lighting with configurable ambient floor
                     dot_val = abs(float(np.dot(normal, self.light_dir)))
-                    intensity = max(self.ambient_intensity, min(1.0, self.ambient_intensity + (1.0 - self.ambient_intensity) * dot_val * self.light_intensity))
+                    intensity = max(self.ambient_intensity, min(
+                        1.0, self.ambient_intensity
+                        + (1.0 - self.ambient_intensity) * dot_val * self.light_intensity))
                 else:
                     intensity = 1.0
 
@@ -506,7 +517,8 @@ class Renderer3D:
                         roi = frame[min_y:max_y, min_x:max_x]
                         overlay = roi.copy()
                         cv2.fillPoly(overlay, [sub_pts], shaded_bgr, lineType=cv2.LINE_AA)
-                        cv2.addWeighted(overlay, material.opacity, roi, 1.0 - material.opacity, 0, roi)
+                        cv2.addWeighted(overlay, material.opacity, roi,
+                                        1.0 - material.opacity, 0, roi)
                 else:
                     cv2.fillPoly(frame, [pts], shaded_bgr, lineType=cv2.LINE_AA)
 

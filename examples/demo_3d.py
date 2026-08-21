@@ -1,6 +1,7 @@
 """
 Visual AI Game Engine - Seamless 3D Elements Demo
-Demonstrates rendering, projecting, and interacting with 3D primitives driven by AI gesture tracking.
+Demonstrates rendering, projecting, and interacting with 3D primitives driven
+by AI gesture tracking.
 """
 
 import queue
@@ -37,7 +38,8 @@ def main():
     engine = GameEngine(float(WIDTH), float(HEIGHT))
 
     # Initialize 3D Camera & Software Renderer
-    camera = Camera3D(fov=60.0, screen_width=WIDTH, screen_height=HEIGHT, position=(0.0, 0.0, 500.0))
+    camera = Camera3D(fov=60.0, screen_width=WIDTH, screen_height=HEIGHT,
+                      position=(0.0, 0.0, 500.0))
     renderer = Renderer3D(camera=camera)
 
     # Spawn 3D Elements with materials, rotation speeds, and geometries
@@ -95,7 +97,8 @@ def main():
     pipeline = VisionPipeline(result_queue=ai_queue, width=WIDTH, height=HEIGHT)
     pipeline.start()
 
-    print("[3D Demo] 3D Scene running. Move hand or face in camera to interact! Press 'q' or 'ESC' to quit.")
+    print("[3D Demo] 3D Scene running. Move hand or face in camera to "
+          "interact! Press 'q' or 'ESC' to quit.")
 
     last_time = time.time()
     current_frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
@@ -189,7 +192,8 @@ def main():
             )
             cv2.putText(
                 canvas,
-                f"3D Elements: {len(entities)} | Tracked Target: ({int(target_ent.x)}, {int(target_ent.y)}, {int(target_ent.z)})",
+                f"3D Elements: {len(entities)} | Tracked Target: "
+                f"({int(target_ent.x)}, {int(target_ent.y)}, {int(target_ent.z)})",
                 (20, 70),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,

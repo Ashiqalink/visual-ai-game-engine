@@ -1,5 +1,6 @@
 """
-test_3d_character_options.py — Verification test for Visual AI Engine 3D character primitives and factors.
+test_3d_character_options.py — verification of the engine's 3D character
+primitives and factors.
 """
 
 import os

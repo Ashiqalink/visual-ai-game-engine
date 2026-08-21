@@ -6,7 +6,8 @@ Contains pure game-agnostic mathematical operations:
   • Viewport & camera frame coordinate conversion
   • Vector2 & Vector3 operations (dot, cross, distance, angle_between, reflect)
   • Interpolation & Easing curves (lerp, slerp, ease_in_quad, spring, etc.)
-  • Kinematics & Physics primitives (Euler integration, drag, AABB & Circle collisions, trajectory prediction)
+  • Kinematics & Physics primitives (Euler integration, drag, AABB & Circle
+    collisions, trajectory prediction)
   • Fixed-timestep update accumulator & Tween progress manager
   • Seeded RNG, weighted random selection, and noise utilities
 """

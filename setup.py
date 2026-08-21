@@ -109,7 +109,8 @@ setup(
     name="visual_ai",
     version="0.3.0",
     author="Visual AI Game Engine Developers",
-    description="High-performance Computer Vision AI tracking and physics library for game developers",
+    description="High-performance Computer Vision AI tracking and physics "
+                "library for game developers",
     package_dir={"": "src"},
     packages=find_packages(where="src"),
     ext_modules=ext_modules,

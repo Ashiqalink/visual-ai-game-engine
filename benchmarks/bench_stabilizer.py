@@ -112,7 +112,8 @@ def scenario_calibration() -> Scenario:
                max_value=2.0, detail="true resting depth 450.0 mm")
     scen.check("noise estimate error", abs(stab.z_noise_amplitude - true_sigma) * MM,
                "mm", max_value=1.0,
-               detail=f"measured {stab.z_noise_amplitude * MM:.2f} vs true {true_sigma * MM:.2f} mm")
+                detail=f"measured {stab.z_noise_amplitude * MM:.2f} "
+                       f"vs true {true_sigma * MM:.2f} mm")
     scen.check("gate width", stab.noise_gate * MM, "mm", min_value=2.0, max_value=20.0,
                detail=f"gate_k={stab.gate_k} x noise")
     scen.check("progress complete", stab.progress, "", min_value=1.0)
@@ -317,7 +318,8 @@ def scenario_invalid_readings() -> Scenario:
     """Zeros and NaNs mid-stream must pass through without poisoning the baseline."""
     scen = Scenario(
         name="invalid readings survive",
-        description="An active stabilizer fed 0.0 / NaN must pass them through and keep its baseline.",
+        description="An active stabilizer fed 0.0 / NaN must pass them "
+                    "through and keep its baseline.",
     )
     stab, truth, raw = _calibrated(*signals.tof_rest(n=300, depth=0.45))
     baseline_before = stab.z_baseline

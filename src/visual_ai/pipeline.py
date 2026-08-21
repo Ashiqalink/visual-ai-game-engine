@@ -636,7 +636,7 @@ class VisionPipeline(threading.Thread):
         return self.smoothing_enabled
 
     def set_movement_magnification(self, mag: float):
-        """Dynamically update movement magnification factor for input tracking and gesture pinch scaling."""
+        """Update the movement magnification for tracking and pinch scaling."""
         self.movement_magnification = max(0.5, float(mag))
 
     def set_noise_duration(self, duration: float):
@@ -760,7 +760,8 @@ class VisionPipeline(threading.Thread):
                         else None)
                     self.depth_fps = self.depth_stream.source.fps
 
-                if self.camera_available and cap is not None and not getattr(self, 'disable_camera', False):
+                if (self.camera_available and cap is not None
+                        and not getattr(self, 'disable_camera', False)):
                     try:
                         ret, frame = cap.read()
                         if not ret or frame is None:
@@ -996,7 +997,8 @@ class VisionPipeline(threading.Thread):
         }
 
         if self.emit_depth_grid:
-            payload["depth_grid"] = self._build_depth_grid(hands, face_box if face_visible else None)
+            payload["depth_grid"] = self._build_depth_grid(
+                hands, face_box if face_visible else None)
 
         if self.emit_person_mask:
             payload["person_mask"] = self._get_person_mask(bgr_frame)

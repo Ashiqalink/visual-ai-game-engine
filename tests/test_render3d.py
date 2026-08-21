@@ -14,11 +14,13 @@ class TestRender3D(unittest.TestCase):
         pts = np.array([[1.0, 0.0, 0.0]], dtype=np.float64)
         transformed = t.transform_points(pts)
         self.assertEqual(transformed.shape, (1, 3))
-        # 1.0 scaled by 2 = 2.0. Rotated 90 deg around Y gives (0, 0, -2) + translation (10, 20, 30) = (10, 20, 28)
+        # 1.0 scaled by 2 = 2.0. Rotated 90 deg around Y gives (0, 0, -2)
+        # + translation (10, 20, 30) = (10, 20, 28)
         np.testing.assert_allclose(transformed[0], [10.0, 20.0, 28.0], atol=1e-4)
 
     def test_camera_projection(self):
-        cam = Camera3D(fov=60.0, screen_width=800.0, screen_height=600.0, position=(0.0, 0.0, 500.0))
+        cam = Camera3D(fov=60.0, screen_width=800.0, screen_height=600.0,
+                       position=(0.0, 0.0, 500.0))
         # Point directly in front of camera
         projected = cam.project_point((0.0, 0.0, 0.0))
         self.assertIsNotNone(projected)

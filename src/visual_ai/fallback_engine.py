@@ -26,7 +26,7 @@ from visual_ai.material import Material
 
 @dataclass
 class Entity:
-    """General-purpose game engine entity representing an in-world object with transform, velocity, and material."""
+    """An in-world object with transform, velocity, and material."""
     id: int
     name: str = "Entity"
     x: float = 0.0
@@ -97,7 +97,8 @@ def _coerce_material(material: Material | None) -> Material:
 
 class PythonFallbackEngine:
     """
-    Pure Python fallback physics and scene engine used when C++ engine_core extension is not compiled.
+    Pure Python fallback physics and scene engine, used when the C++
+    engine_core extension is not compiled.
     Supports general Entity objects with PBR Materials as well as legacy Block/Debris components.
     """
     def __init__(self, width: float = 800.0, height: float = 600.0):
@@ -229,7 +230,8 @@ class PythonFallbackEngine:
         """Remove all general entities."""
         self.entities.clear()
 
-    def add_block(self, x: float, y: float, w: float, h: float, health: float, material: Material | None = None):
+    def add_block(self, x: float, y: float, w: float, h: float, health: float,
+                  material: Material | None = None):
         mat = _coerce_material(material)
         self.blocks.append(Block(x, y, w, h, health, health, True, mat))
 

@@ -86,7 +86,8 @@ class TestEngineCoreMath(unittest.TestCase):
 
         self.assertTrue(intersect_circle_aabb((5, 5, 2), (0, 0, 10, 10)))
 
-        traj = predict_projectile_trajectory((0.0, 0.0), (10.0, -10.0), gravity=9.81, time_step=0.1, num_steps=5)
+        traj = predict_projectile_trajectory((0.0, 0.0), (10.0, -10.0),
+                                             gravity=9.81, time_step=0.1, num_steps=5)
         self.assertEqual(len(traj), 5)
 
     def test_fixed_timestep_accumulator(self):

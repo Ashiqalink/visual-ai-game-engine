@@ -35,7 +35,8 @@ class TestGameEngine(unittest.TestCase):
         gold_mat = Material.preset("gold")
         
         # Test Python fallback engine entity adding
-        ent_fb = self.fallback.add_entity("PlayerTarget", x=100.0, y=200.0, z=0.0, material=gold_mat)
+        ent_fb = self.fallback.add_entity("PlayerTarget", x=100.0, y=200.0, z=0.0,
+                                          material=gold_mat)
         self.assertEqual(ent_fb.name, "PlayerTarget")
         self.assertEqual(ent_fb.material.name, "Gold")
         self.assertEqual(len(self.fallback.get_entities()), 1)
@@ -46,7 +47,8 @@ class TestGameEngine(unittest.TestCase):
         self.assertEqual(ent_fb.x, 150.0)
 
         # Test C++ engine or active backend
-        self.engine.add_entity("Obstacle", x=50.0, y=50.0, z=0.0, vx=0.0, vy=0.0, vz=0.0, w=10.0, h=10.0, d=1.0)
+        self.engine.add_entity("Obstacle", x=50.0, y=50.0, z=0.0,
+                               vx=0.0, vy=0.0, vz=0.0, w=10.0, h=10.0, d=1.0)
         entities = self.engine.get_entities()
         self.assertEqual(len(entities), 1)
 

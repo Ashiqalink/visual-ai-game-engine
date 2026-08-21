@@ -186,7 +186,8 @@ def run() -> BenchResult:
     scen = Scenario(
         name="fingertip tracking vs native-resolution reference",
         description=(f"{len(frames)} frames, hand detected in {reference['detected']}/"
-                     f"{len(frames)} reference frames ({100*reference['detected']/len(frames):.0f}%). "
+                     f"{len(frames)} reference frames "
+                     f"({100*reference['detected']/len(frames):.0f}%). "
                      "rmse/lag scored only on frames the reference itself detected."),
         y_label="px",
     )
@@ -202,7 +203,8 @@ def run() -> BenchResult:
         else:
             rmse, lag = float("nan"), float("nan")
 
-        ms_saved_pct = (1.0 - run_data["ms_per_frame"] / baseline_ms) * 100.0 if baseline_ms else 0.0
+        ms_saved_pct = ((1.0 - run_data["ms_per_frame"] / baseline_ms) * 100.0
+                        if baseline_ms else 0.0)
 
         comparison_rows.append([
             label,

@@ -34,7 +34,8 @@ def get_landmark_distance(pt1: Point2D, pt2: Point2D) -> float:
 
 def get_finger_angle(joint_a: Point2D, joint_b: Point2D, joint_c: Point2D) -> float:
     """
-    Calculate joint flexion angle in degrees at joint_b (vertex) formed by joint_a -> joint_b -> joint_c.
+    Calculate joint flexion angle in degrees at joint_b (vertex), formed by
+    joint_a -> joint_b -> joint_c.
     Returns angle in degrees [0, 180].
     """
     ax, ay = _extract_xy(joint_a)

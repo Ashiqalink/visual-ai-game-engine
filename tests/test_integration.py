@@ -12,7 +12,8 @@ class TestPipelineIntegration(unittest.TestCase):
         ai_queue = queue.Queue(maxsize=5)
 
         # Initialize Vision Pipeline in background thread
-        pipeline = VisionPipeline(result_queue=ai_queue, width=WIDTH, height=HEIGHT, camera_index=-1)
+        pipeline = VisionPipeline(result_queue=ai_queue, width=WIDTH,
+                                  height=HEIGHT, camera_index=-1)
         pipeline.start()
 
         engine = GameEngine(float(WIDTH), float(HEIGHT))
@@ -33,7 +34,8 @@ class TestPipelineIntegration(unittest.TestCase):
 
                 engine.update(0.016)
 
-            self.assertGreater(received_frames, 0, "Pipeline should send at least 1 vision coordinate frame")
+            self.assertGreater(received_frames, 0,
+                               "Pipeline should send at least 1 vision coordinate frame")
             self.assertIsNotNone(engine.get_target_x())
             self.assertIsNotNone(engine.get_target_y())
 
