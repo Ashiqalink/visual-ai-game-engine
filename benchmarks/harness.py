@@ -10,7 +10,7 @@ Handles the three things every bench needs and nothing else:
   ``src`` to the front of ``sys.path`` and reports which file actually loaded,
   so a bench run can never quietly measure the wrong code.
 
-* **A fake clock** — ``ToFStabilizer`` ends its calibration window against
+* **A fake clock** — ``DepthStabilizer`` ends its calibration window against
   ``time.time()``. A bench that feeds 3 seconds of samples in 2 ms would never
   leave the sampling state, so :func:`fake_clock` swaps the module's ``time``
   reference for a hand-cranked one.
@@ -63,13 +63,13 @@ def bootstrap() -> dict[str, str]:
             del sys.modules[name]
         _BOOTSTRAPPED = True
 
+    import visual_ai.depth_stabilizer as depth_stabilizer
     import visual_ai.jitter_analyzer as jitter_analyzer
     import visual_ai.noise_filter as noise_filter
-    import visual_ai.tof_stabilizer as tof_stabilizer
 
     return {
         "visual_ai.noise_filter": noise_filter.__file__,
-        "visual_ai.tof_stabilizer": tof_stabilizer.__file__,
+        "visual_ai.depth_stabilizer": depth_stabilizer.__file__,
         "visual_ai.jitter_analyzer": jitter_analyzer.__file__,
     }
 
@@ -106,7 +106,7 @@ def fake_clock(*modules, start: float = 1_000.0):
 
     Usage::
 
-        with fake_clock(tof_stabilizer) as clock:
+        with fake_clock(depth_stabilizer) as clock:
             stab.begin(3.0)
             for z in samples:
                 stab.feed(z)

@@ -5,13 +5,15 @@ attributes are now depth_*. Every old name stays as an alias until the games
 move over, and these tests are what says so out loud.
 """
 
+import importlib
 import queue
+import sys
 
 import numpy as np
 import pytest
 
+from visual_ai.depth_stabilizer import DepthStabilizer, ToFStabilizer
 from visual_ai.pipeline import VisionPipeline
-from visual_ai.tof_stabilizer import DepthStabilizer, ToFStabilizer
 
 
 def a_pipeline():
@@ -66,6 +68,16 @@ class TestAttributeAliases:
 
     def test_stabilizer_alias(self):
         assert ToFStabilizer is DepthStabilizer
+
+
+class TestDeprecatedModulePath:
+    def test_the_old_import_path_still_resolves_and_warns(self):
+        # A fresh import is what warns, so evict any earlier one.
+        sys.modules.pop("visual_ai.tof_stabilizer", None)
+        with pytest.warns(DeprecationWarning, match="visual_ai.depth_stabilizer"):
+            shim = importlib.import_module("visual_ai.tof_stabilizer")
+        assert shim.DepthStabilizer is DepthStabilizer
+        assert shim.ToFStabilizer is DepthStabilizer
 
 
 class TestLabelsAreHonest:

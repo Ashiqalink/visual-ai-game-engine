@@ -1,8 +1,8 @@
 """
-tof_stabilizer.py — ToF Lid-Shake Stabilization for Visual AI Game Engine.
+depth_stabilizer.py — Lid-Shake Stabilization for Visual AI Game Engine.
 
 When a laptop lid vibrates (from a fan, wind, or physical bump) the camera
-shifts slightly, causing the entire ToF depth stream to wobble. This module
+shifts slightly, causing the entire depth stream to wobble. This module
 measures the ambient Z fluctuation over a short calibration window while the
 user holds still, then suppresses fluctuations of that magnitude from all
 future readings while letting real hand movement through unchanged.
@@ -161,7 +161,7 @@ class DepthStabilizer:
 
         Deliberately resolves ``time.time`` through the module on every call
         rather than binding it in ``__init__``: the benches fast-forward a
-        calibration by replacing ``tof_stabilizer.time`` wholesale, and a
+        calibration by replacing ``depth_stabilizer.time`` wholesale, and a
         captured reference would silently ignore that and hang every timed
         check in the suite.
         """

@@ -77,7 +77,7 @@ Queue payload (dict)
   "scene_luma"           : float,     # mean luma 0-255 before any boost
   "low_light_gain"       : float,     # gain applied; 1.0 = frame untouched
 
-  # Depth (see tof_stabilizer.py)
+  # Depth (see depth_stabilizer.py)
   "depth_active"         : bool,      # a real depth sensor is supplying this
   "depth_m"              : float,     # stabilized depth (m)
   "depth_m_raw"          : float,     # depth before stabilization (m)
@@ -127,6 +127,7 @@ import cv2
 import numpy as np
 
 from visual_ai.depth_source import DepthStream, open_depth_source
+from visual_ai.depth_stabilizer import DepthStabilizer
 from visual_ai.gesture_math import get_landmark_velocity
 from visual_ai.gesture_mlp import GestureMLP, landmarks_to_features
 from visual_ai.jitter_analyzer import JitterAnalyzer
@@ -136,7 +137,6 @@ from visual_ai.noise_filter import (
     PipelineNoiseFilter,
     ema_alpha_to_cutoff,
 )
-from visual_ai.tof_stabilizer import ToFStabilizer
 
 # ── Optional MediaPipe imports ────────────────────────────────────────────────
 HAS_MEDIAPIPE = False
@@ -412,7 +412,7 @@ class VisionPipeline(threading.Thread):
         self.smooth_alpha  = smooth_alpha
         self.movement_magnification = movement_magnification
         self.noise_filter  = PipelineNoiseFilter(noise_duration=noise_duration)
-        self.tof_stabilizer = ToFStabilizer()
+        self.tof_stabilizer = DepthStabilizer()
 
         # Underexposure gate. MediaPipe stops returning a hand well before a
         # room looks dark to a person, and a dropout is indistinguishable
@@ -823,7 +823,7 @@ class VisionPipeline(threading.Thread):
 
                 # ── ToF Stabilizer: draw warning overlay during calibration ──────
                 if (
-                    self.tof_stabilizer.state == ToFStabilizer.STATE_SAMPLING
+                    self.tof_stabilizer.state == DepthStabilizer.STATE_SAMPLING
                     and payload is not None
                     and "frame" in payload
                     and payload["frame"] is not None
@@ -1264,7 +1264,7 @@ class VisionPipeline(threading.Thread):
             index_pos[0], index_pos[1], z_val)
 
         # Feed raw sample to calibrator during sampling window
-        if self.tof_stabilizer.state == ToFStabilizer.STATE_SAMPLING:
+        if self.tof_stabilizer.state == DepthStabilizer.STATE_SAMPLING:
             self.tof_stabilizer.feed(depth_raw_m)
 
         # Gate ambient vibration out of Z (no-op when inactive)
