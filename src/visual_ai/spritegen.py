@@ -30,7 +30,6 @@ OpenCV; :func:`visual_ai.imaging.bgr_to_rgb` converts at the boundary.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import asdict, dataclass, replace
 from typing import Literal
 
@@ -39,7 +38,6 @@ import numpy as np
 __all__ = [
     "CreatureSpec",
     "render_creature",
-    "render_views",
     "DEFAULT_CAST",
     "spec_from_dict",
     "spec_to_dict",
@@ -109,10 +107,6 @@ def _op_round(sdf: np.ndarray, radius: float) -> np.ndarray:
 
 def _op_intersect(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.maximum(a, b)
-
-
-def _op_subtract(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    return np.maximum(a, -b)
 
 
 # ── Compositing ───────────────────────────────────────────────────────────────
@@ -355,11 +349,6 @@ def render_creature(spec: CreatureSpec, view: View = "front",
     return canvas.to_rgba()
 
 
-def render_views(spec: CreatureSpec, size: int = 192) -> dict[str, np.ndarray]:
-    """Both views of one spec, keyed by view name."""
-    return {view: render_creature(spec, view=view, size=size) for view in VIEWS}
-
-
 # ── A default cast ────────────────────────────────────────────────────────────
 #
 # Five plainly-drawn birds distinguished only by colour, silhouette and size.
@@ -392,7 +381,3 @@ DEFAULT_CAST: tuple[CreatureSpec, ...] = (
         beak=(244, 168, 60), scale=0.96, gloss=0.15, tail=0.20,
     ),
 )
-
-
-def cast_by_name(cast: Iterable[CreatureSpec] | None = None) -> dict[str, CreatureSpec]:
-    return {spec.name: spec for spec in (cast if cast is not None else DEFAULT_CAST)}

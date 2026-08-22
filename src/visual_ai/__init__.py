@@ -4,7 +4,7 @@ High-performance computer vision and AI physics tracking SDK for game developers
 """
 
 from visual_ai import imaging
-from visual_ai.capture import default_backend, open_camera
+from visual_ai.capture import default_backend
 from visual_ai.depth_source import (
     DepthRecorder,
     DepthSource,
@@ -57,7 +57,6 @@ from visual_ai.math_utils import (
     Tween,
     Vector2,
     Vector3,
-    calculate_drag_force,
     ease_in_out_sine,
     ease_in_quad,
     ease_out_quad,
@@ -70,15 +69,11 @@ from visual_ai.math_utils import (
     perlin_noise_1d,
     predict_projectile_trajectory,
     remap_camera_roi_to_game,
-    slerp_quaternion,
-    spring,
-    weighted_choice,
 )
 from visual_ai.matting import (
     MODNET_AVAILABLE,
     PortraitMatter,
     cut_out_person,
-    portrait_matte,
 )
 from visual_ai.noise_filter import (
     FilteredGestureDetector,
@@ -96,9 +91,7 @@ from visual_ai.spritegen import (
     DEFAULT_CAST,
     VIEWS,
     CreatureSpec,
-    cast_by_name,
     render_creature,
-    render_views,
     spec_from_dict,
     spec_to_dict,
 )
@@ -151,7 +144,6 @@ __all__ = [
     "LowLightBoost",
     "measure_luma",
     "default_backend",
-    "open_camera",
     "DepthSource",
     "DepthStream",
     "DepthRecorder",
@@ -176,13 +168,10 @@ __all__ = [
     "map_range",
     "remap_camera_roi_to_game",
     "lerp",
-    "slerp_quaternion",
     "ease_in_quad",
     "ease_out_quad",
     "ease_in_out_sine",
-    "spring",
     "integrate_euler",
-    "calculate_drag_force",
     "intersect_aabb_aabb",
     "intersect_circle_circle",
     "intersect_circle_aabb",
@@ -190,7 +179,6 @@ __all__ = [
     "FixedTimestepAccumulator",
     "Tween",
     "SeededRNG",
-    "weighted_choice",
     "perlin_noise_1d",
     # Gesture Math
     "get_landmark_distance",
@@ -200,10 +188,8 @@ __all__ = [
     # Sprite generation
     "CreatureSpec",
     "render_creature",
-    "render_views",
     "spec_from_dict",
     "spec_to_dict",
-    "cast_by_name",
     "DEFAULT_CAST",
     "BODY_SHAPES",
     "VIEWS",
@@ -231,7 +217,6 @@ __all__ = [
     "REMBG_AVAILABLE",
     # Portrait matting (MODNet)
     "PortraitMatter",
-    "portrait_matte",
     "cut_out_person",
     "MODNET_AVAILABLE",
     # Re-exported dependencies

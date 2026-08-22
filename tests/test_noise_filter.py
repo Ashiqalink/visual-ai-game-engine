@@ -129,6 +129,37 @@ class TestNoiseFilter(unittest.TestCase):
         pnf.process_payload(payload)
         self.assertTrue(payload["is_pinching"])
 
+    def test_suppresses_per_hand_dicts_too(self):
+        """
+        The payload's "hands" tuple and the handedness shortcuts share dict
+        objects; a top-level-only suppression let multi-hand consumers bypass
+        the gate entirely.
+        """
+        pnf = PipelineNoiseFilter(noise_duration=2.0)
+        left = {"handedness": "Left", "is_pinching": True,
+                "click_just_fired": True, "z_delta": 0.05}
+        right = {"handedness": "Right", "is_pinching": True,
+                 "click_just_fired": False, "z_delta": 0.0}
+        payload = {
+            "hand_visible": True,
+            "is_pinching": True,
+            "hands": (left, right),
+            "hand_left": left,
+            "hand_right": right,
+        }
+        filtered = pnf.process_payload(payload)
+
+        for hand in filtered["hands"]:
+            self.assertFalse(hand["is_pinching"])
+            self.assertFalse(hand["click_just_fired"])
+            self.assertEqual(hand["z_delta"], 0.0)
+        # Shortcuts still alias the entries of "hands".
+        self.assertIs(filtered["hand_left"], filtered["hands"][0])
+        self.assertIs(filtered["hand_right"], filtered["hands"][1])
+        # The caller's dicts are untouched.
+        self.assertTrue(left["is_pinching"])
+        self.assertTrue(right["is_pinching"])
+
     def test_persistent_state_is_left_alone(self):
         """
         The filter can only rewrite its payload copy, not the pipeline's internal

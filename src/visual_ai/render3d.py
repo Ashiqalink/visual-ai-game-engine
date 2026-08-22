@@ -81,22 +81,17 @@ class Camera3D:
     def __init__(
         self,
         fov: float = 60.0,
-        aspect_ratio: float = 4.0 / 3.0,
         near: float = 0.1,
-        far: float = 1000.0,
         position: tuple[float, float, float] = (0.0, 0.0, 500.0),
-        target: tuple[float, float, float] = (0.0, 0.0, 0.0),
-        up: tuple[float, float, float] = (0.0, 1.0, 0.0),
         screen_width: float = 800.0,
         screen_height: float = 600.0,
     ):
+        # The projection is position + focal length only — no look-at, no far
+        # clip. The old aspect_ratio/far/target/up parameters were stored and
+        # never read, silently ignoring whatever callers passed.
         self.fov = fov
-        self.aspect_ratio = aspect_ratio
         self.near = near
-        self.far = far
         self.position = np.array(position, dtype=np.float64)
-        self.target = np.array(target, dtype=np.float64)
-        self.up = np.array(up, dtype=np.float64)
         self.screen_width = screen_width
         self.screen_height = screen_height
 
@@ -150,11 +145,11 @@ class Camera3D:
 @dataclass
 class Mesh3D:
     """
-    3D Geometry representation holding vertices, faces, and normals.
+    3D Geometry representation holding vertices and faces. Face normals are
+    computed by the renderer per draw (see _face_intensity), not stored here.
     """
     vertices: np.ndarray  # N x 3 float64
     faces: list[list[int]]  # List of face vertex index lists
-    normals: np.ndarray | None = None  # Face or vertex normals
 
     # Built on first render, never by hand — see face_groups().
     _face_groups: list[tuple[np.ndarray, np.ndarray]] | None = field(
@@ -411,13 +406,13 @@ class Mesh3D:
         """Scale Z-axis vertices by depth_factor to adjust 3D extrusion thickness."""
         new_verts = self.vertices.copy()
         new_verts[:, 2] *= float(depth_factor)
-        return Mesh3D(vertices=new_verts, faces=self.faces, normals=self.normals)
+        return Mesh3D(vertices=new_verts, faces=self.faces)
 
     def scale_non_uniform(self, sx: float = 1.0, sy: float = 1.0, sz: float = 1.0) -> "Mesh3D":
         """Apply non-uniform 3D scaling to mesh vertices."""
         new_verts = self.vertices.copy()
         new_verts *= np.array([sx, sy, sz], dtype=np.float64)
-        return Mesh3D(vertices=new_verts, faces=self.faces, normals=self.normals)
+        return Mesh3D(vertices=new_verts, faces=self.faces)
 
 
 class Renderer3D:

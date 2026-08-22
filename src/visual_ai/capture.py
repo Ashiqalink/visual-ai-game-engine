@@ -37,28 +37,3 @@ def default_backend() -> int:
     return getattr(cv2, "CAP_V4L2", 0)
 
 
-def open_camera(index: int = 0, width: int | None = None, height: int | None = None,
-                backend: int | None = None) -> "cv2.VideoCapture | None":
-    """Open a camera with the platform's backend. Returns an open cap or None.
-
-    Never raises and never hands back a capture that opened but cannot
-    produce a frame -- on macOS in particular, a camera the user has not
-    granted permission to opens cleanly and then reads nothing at all, which
-    is otherwise diagnosed as "the camera is broken" rather than "the OS
-    denied us".
-    """
-    if cv2 is None:                                    # pragma: no cover
-        return None
-    cap = cv2.VideoCapture(index, default_backend() if backend is None else backend)
-    if not cap.isOpened():
-        cap.release()
-        return None
-    if width:
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    if height:
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    ok, frame = cap.read()
-    if not ok or frame is None:
-        cap.release()
-        return None
-    return cap

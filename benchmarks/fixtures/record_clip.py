@@ -9,7 +9,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))), "src"))
 from visual_ai.capture import default_backend
 
-OUT = "hand_motion.mp4"
+# Anchored to this directory, not the CWD: bench_resolution.py resolves the
+# fixture absolutely as benchmarks/fixtures/hand_motion.mp4, so a clip
+# recorded from the repo root (as its error message suggests) must land here.
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hand_motion.mp4")
 DURATION_S = 12
 WIDTH, HEIGHT, FPS = 1280, 720, 30
 

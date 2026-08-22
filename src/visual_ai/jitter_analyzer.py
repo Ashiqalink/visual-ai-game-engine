@@ -48,6 +48,8 @@ import numpy as np
 _DETREND_GAIN = math.sqrt(1.5)
 
 #: Keys every stats dict carries, so consumers can index without .get() guards.
+#: Note: *_jitter_mean_px are legacy aliases of *_speed_px (mean step
+#: distance); the jitter statistics are *_jitter_std and *_hf_energy_px.
 _STAT_KEYS = (
     "raw_jitter_std",
     "raw_jitter_mean_px",
@@ -185,6 +187,9 @@ class JitterAnalyzer:
         else:
             reduction_pct = 0.0
 
+        # *_jitter_mean_px predates the detrended rework and is pinned by
+        # tests as MEAN STEP DISTANCE — a legacy alias of *_speed_px, not a
+        # jitter statistic. Read *_jitter_std for actual jitter.
         return {
             "raw_jitter_std":          round(raw_jitter, 2),
             "raw_jitter_mean_px":      round(float(raw_steps.mean()), 2),

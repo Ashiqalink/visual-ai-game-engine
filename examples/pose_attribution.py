@@ -180,7 +180,6 @@ class PoseAttributor:
         self._lock = threading.RLock()
         self._anchor: list[tuple[float, float] | None] = [None] * max_players
         self._sticky: dict[int, int] = {}   # hand slot -> player slot, across pose gaps
-        self.frames_since_pose = 0
         self.last_ms = 0.0
         # VIDEO mode rejects a timestamp that does not strictly increase, and it
         # raises rather than skipping the frame. Owning the counter here means a
@@ -204,7 +203,6 @@ class PoseAttributor:
         t0 = time.perf_counter()
         result = self._landmarker.detect_for_video(image, self._ts_ms)
         self.last_ms = (time.perf_counter() - t0) * 1000.0
-        self.frames_since_pose = 0
 
         raw = list(result.pose_landmarks or [])
         assignment = self._assign_player_slots(raw, w, h)
@@ -392,13 +390,10 @@ class PoseWorker(threading.Thread):
         self._pending: np.ndarray | None = None
         self._wake = threading.Event()
         self._lock = threading.Lock()
-        self.dropped = 0        # frames superseded before the worker got to them
 
     def submit(self, frame: np.ndarray) -> None:
         """Offer a frame. Never blocks; a newer frame simply replaces an older."""
         with self._lock:
-            if self._pending is not None:
-                self.dropped += 1
             self._pending = frame
         self._wake.set()
 
@@ -570,8 +565,6 @@ def main() -> int:
                     worker.submit(frame)
                 else:
                     att.update(frame)
-            else:
-                att.frames_since_pose += 1
             frame_i += 1
 
             rows = att.attribute(hands)

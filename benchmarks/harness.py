@@ -3,12 +3,11 @@ harness.py — Shared plumbing for the stabilizer / filter test benches.
 
 Handles the three things every bench needs and nothing else:
 
-* **Import bootstrap** — the repo carries two copies of the package
-  (``src/visual_ai`` and a stale top-level ``visual_ai``). Plain ``import
-  visual_ai`` from the project root picks the stale one, which has no
-  ``OneEuroFilter`` and no ``jitter_analyzer``. :func:`bootstrap` forces
-  ``src`` to the front of ``sys.path`` and reports which file actually loaded,
-  so a bench run can never quietly measure the wrong code.
+* **Import bootstrap** — the repo once carried a stale top-level ``visual_ai``
+  duplicate that shadowed ``src/visual_ai`` (it is gone now — see CLAUDE.md).
+  :func:`bootstrap` still forces ``src`` to the front of ``sys.path``, purges
+  any wrong copy, and reports which file actually loaded, so a bench run can
+  never quietly measure the wrong code if the hazard ever returns.
 
 * **A fake clock** — ``DepthStabilizer`` ends its calibration window against
   ``time.time()``. A bench that feeds 3 seconds of samples in 2 ms would never
@@ -169,7 +168,6 @@ def bold(t: str) -> str:   return c(t, "1")
 def dim(t: str) -> str:    return c(t, "2")
 def green(t: str) -> str:  return c(t, "32")
 def red(t: str) -> str:    return c(t, "31")
-def yellow(t: str) -> str: return c(t, "33")
 def cyan(t: str) -> str:   return c(t, "36")
 
 
@@ -357,7 +355,11 @@ class BenchResult:
 
 
 def print_scenarios(result: BenchResult) -> None:
-    """Print each scenario's trace, metrics, and check rows."""
+    """Print each scenario's trace, notes, and check rows.
+
+    The per-scenario ``metrics`` dicts are deliberately not rendered here or
+    in the HTML report — they reach output only via ``--json``.
+    """
     for scen in result.scenarios:
         status = green("PASS") if scen.passed else red("FAIL")
         print(f"\n  {bold(scen.name)}  [{status}]")

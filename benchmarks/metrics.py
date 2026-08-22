@@ -93,6 +93,12 @@ def lag_ms(series, truth, dt: float, max_shift: int = 30) -> float:
     if n < 8 or float(np.max(np.abs(np.diff(b, axis=0)))) < 1e-9:
         return 0.0
 
+    # A shift at or beyond the series length leaves an empty overlap, and
+    # np.mean of an empty slice is NaN — one NaN in the error table makes the
+    # min() below order-dependent garbage. Keep at least 4 overlapping frames
+    # (n >= 8 is guaranteed above, so this never goes below 4).
+    max_shift = min(max_shift, n - 4)
+
     def err(shift: int) -> float:
         # Positive shift = output is late: compare output[k+shift] to truth[k].
         if shift >= 0:
@@ -162,23 +168,6 @@ def settle_frames(series, truth, tol_frac: float = 0.05) -> float:
         return 0.0
     last = int(outside[-1])
     return float("inf") if last >= n - step_at - 1 else float(last + 1)
-
-
-def spike_leak_pct(series, truth, spike_idx, spike_height: float) -> float:
-    """
-    How much of an injected glitch reached the output, as a percentage of the
-    glitch height. 0% = fully rejected, 100% = passed straight through.
-    """
-    a = np.asarray(series, dtype=float).ravel()
-    b = np.asarray(truth, dtype=float).ravel()
-    if spike_height <= 1e-9 or len(spike_idx) == 0:
-        return 0.0
-    # A filter delays the glitch, so look at the frame itself and the two after.
-    leaks = [
-        max(abs(a[i + k] - b[i + k]) for k in (0, 1, 2) if i + k < a.size)
-        for i in spike_idx if i < a.size
-    ]
-    return float(np.mean(leaks) / spike_height * 100.0)
 
 
 def throughput(fn, samples, repeats: int = 3) -> float:

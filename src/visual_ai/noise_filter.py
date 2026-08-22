@@ -31,10 +31,6 @@ class NoiseFilter:
         """Reset the noise filter timer to current time."""
         self.start_time = time.time()
 
-    def set_duration(self, duration: float) -> None:
-        """Update the noise window duration in seconds."""
-        self.noise_duration = max(0.0, float(duration))
-
     def elapsed(self) -> float:
         """Return elapsed time since noise filter started, or 0.0 if not started."""
         if self.start_time is None:
@@ -248,26 +244,6 @@ class FilteredGestureDetector:
     def __init__(self, detector_or_bus: Any = None, noise_duration: float = 2.0):
         self.noise_filter = NoiseFilter(noise_duration=noise_duration)
         self.detector = detector_or_bus
-        self.bus = getattr(detector_or_bus, "bus", None) or getattr(
-            detector_or_bus, "event_bus", None
-        )
-
-    def is_noise_window_active(self) -> bool:
-        """Check if currently within the noise suppression window."""
-        return self.noise_filter.is_active()
-
-    def reset_noise_filter(self) -> None:
-        """Reset timing window when restarting game state or transitioning levels."""
-        self.noise_filter.reset()
-
-    def filter_event(self, event_name: str, payload: Any = None) -> dict[str, Any] | None:
-        """
-        Filters an incoming gesture event.
-        Returns None if inside noise duration window, otherwise returns dict payload.
-        """
-        if self.noise_filter.is_active():
-            return None
-        return {"event": event_name, "payload": payload}
 
     def detect_gesture(self, frame: Any) -> Any | None:
         """
@@ -338,13 +314,32 @@ class PipelineNoiseFilter:
         if not self.filter.is_active():
             return payload
 
+        def _suppress(d: dict) -> None:
+            for key in self.SUPPRESSED_FLAGS:
+                if key in d:
+                    d[key] = False
+            for key in self.SUPPRESSED_SCALARS:
+                if key in d:
+                    d[key] = 0.0
+
         filtered_payload = payload.copy()
-        for key in self.SUPPRESSED_FLAGS:
-            if key in filtered_payload:
-                filtered_payload[key] = False
-        for key in self.SUPPRESSED_SCALARS:
-            if key in filtered_payload:
-                filtered_payload[key] = 0.0
+        _suppress(filtered_payload)
+
+        # A shallow copy still shares the per-hand gesture dicts, so the flags
+        # would survive the window inside "hands"/"hand_left"/"hand_right" and
+        # any multi-hand consumer would bypass the gate. Suppress copies, and
+        # keep the handedness shortcuts aliasing the "hands" entries exactly as
+        # the pipeline built them.
+        if filtered_payload.get("hands"):
+            copies = {id(hand): hand.copy() for hand in filtered_payload["hands"]}
+            for hand_copy in copies.values():
+                _suppress(hand_copy)
+            filtered_payload["hands"] = tuple(
+                copies[id(hand)] for hand in filtered_payload["hands"])
+            for key in ("hand_left", "hand_right"):
+                original = filtered_payload.get(key)
+                if original is not None and id(original) in copies:
+                    filtered_payload[key] = copies[id(original)]
 
         return filtered_payload
 

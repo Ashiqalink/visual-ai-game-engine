@@ -28,7 +28,7 @@ def main():
     engine.add_block(600, HEIGHT - 30, 40, 60, 100.0)
 
     # Thread-safe queue for camera AI results
-    ai_queue = queue.Queue(maxsize=2)
+    ai_queue = queue.Queue(maxsize=1)
 
     # Start Vision Pipeline in background thread
     pipeline = VisionPipeline(result_queue=ai_queue, width=WIDTH, height=HEIGHT)
@@ -60,9 +60,15 @@ def main():
             dt = now - last_time
             last_time = now
 
-            # 1. Non-blocking queue check for AI vision updates
-            try:
-                ai_data = ai_queue.get_nowait()
+            # 1. Drain to the freshest payload — the SDK contract every game
+            #    follows: act on the newest frame, never a queued stale one.
+            ai_data = None
+            while True:
+                try:
+                    ai_data = ai_queue.get_nowait()
+                except queue.Empty:
+                    break
+            if ai_data is not None:
                 target_x = ai_data["target_x"]
                 target_y = ai_data["target_y"]
                 if ai_data["frame"] is not None:
@@ -75,8 +81,6 @@ def main():
 
                 # Pass vision coordinates to Engine
                 engine.set_target_position(target_x, target_y)
-            except queue.Empty:
-                pass
 
             # 2. Update Engine physics
             engine.update(dt)

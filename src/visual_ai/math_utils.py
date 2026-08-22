@@ -5,11 +5,11 @@ Contains pure game-agnostic mathematical operations:
   • Transform2D & Transform3D composition & projection
   • Viewport & camera frame coordinate conversion
   • Vector2 & Vector3 operations (dot, cross, distance, angle_between, reflect)
-  • Interpolation & Easing curves (lerp, slerp, ease_in_quad, spring, etc.)
-  • Kinematics & Physics primitives (Euler integration, drag, AABB & Circle
+  • Interpolation & Easing curves (lerp, ease_in_quad, etc.)
+  • Kinematics & Physics primitives (Euler integration, AABB & Circle
     collisions, trajectory prediction)
   • Fixed-timestep update accumulator & Tween progress manager
-  • Seeded RNG, weighted random selection, and noise utilities
+  • Seeded RNG and noise utilities
 """
 
 import math
@@ -158,48 +158,6 @@ def lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * max(0.0, min(1.0, t))
 
 
-def slerp_quaternion(
-    q1: tuple[float, float, float, float],
-    q2: tuple[float, float, float, float],
-    t: float,
-) -> tuple[float, float, float, float]:
-    """Spherical linear interpolation between unit quaternions q1 and q2."""
-    t = max(0.0, min(1.0, t))
-    w1, x1, y1, z1 = q1
-    w2, x2, y2, z2 = q2
-    dot = w1 * w2 + x1 * x2 + y1 * y2 + z1 * z2
-
-    if dot < 0.0:
-        w2, x2, y2, z2 = -w2, -x2, -y2, -z2
-        dot = -dot
-
-    if dot > 0.9995:
-        # Linear interp fallback for close orientations
-        res = (
-            w1 + t * (w2 - w1),
-            x1 + t * (x2 - x1),
-            y1 + t * (y2 - y1),
-            z1 + t * (z2 - z1),
-        )
-        length = math.sqrt(sum(v * v for v in res))
-        return (res[0] / length, res[1] / length, res[2] / length, res[3] / length)
-
-    theta_0 = math.acos(dot)
-    theta = theta_0 * t
-    sin_theta_0 = math.sin(theta_0)
-    sin_theta = math.sin(theta)
-
-    s1 = math.cos(theta) - dot * sin_theta / sin_theta_0
-    s2 = sin_theta / sin_theta_0
-
-    return (
-        s1 * w1 + s2 * w2,
-        s1 * x1 + s2 * x2,
-        s1 * y1 + s2 * y2,
-        s1 * z1 + s2 * z2,
-    )
-
-
 def ease_in_quad(t: float) -> float:
     t = max(0.0, min(1.0, t))
     return t * t
@@ -215,14 +173,6 @@ def ease_in_out_sine(t: float) -> float:
     return -0.5 * (math.cos(math.pi * t) - 1.0)
 
 
-def spring(t: float, stiffness: float = 100.0, damping: float = 10.0) -> float:
-    """Spring oscillation curve starting at 0 and settling towards 1.0."""
-    t = max(0.0, t)
-    omega = math.sqrt(max(0.01, stiffness))
-    decay = math.exp(-damping * t)
-    return 1.0 - decay * math.cos(omega * t)
-
-
 # ── Physics Primitives & Kinematics ─────────────────────────────────────────
 
 def integrate_euler(
@@ -232,15 +182,6 @@ def integrate_euler(
     new_vel = Vector2(vel.x + accel.x * dt, vel.y + accel.y * dt)
     new_pos = Vector2(pos.x + new_vel.x * dt, pos.y + new_vel.y * dt)
     return (new_pos, new_vel)
-
-
-def calculate_drag_force(velocity: Vector2, drag_coeff: float) -> Vector2:
-    """Calculate aerodynamic/friction drag force vector opposing velocity."""
-    speed = velocity.length()
-    if speed < 1e-9:
-        return Vector2(0.0, 0.0)
-    drag_mag = drag_coeff * speed * speed
-    return Vector2(-drag_mag * (velocity.x / speed), -drag_mag * (velocity.y / speed))
 
 
 def intersect_aabb_aabb(
@@ -365,11 +306,6 @@ class SeededRNG:
         if weights is not None:
             return self._rng.choices(options, weights=weights, k=1)[0]
         return self._rng.choice(options)
-
-
-def weighted_choice(options: Sequence[T], weights: Sequence[float]) -> T:
-    """Select option according to relative weight probabilities."""
-    return random.choices(options, weights=weights, k=1)[0]
 
 
 def perlin_noise_1d(x: float) -> float:

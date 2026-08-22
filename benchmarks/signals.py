@@ -162,8 +162,7 @@ def tof_drift(n: int = 600, depth: float = 0.45, drift_m: float = 0.06,
     return truth, raw
 
 
-def tof_blind(n: int = 300, shake_m: float = 0.0,
-              seed: int = 14) -> tuple[np.ndarray, np.ndarray]:
+def tof_blind(n: int = 300) -> tuple[np.ndarray, np.ndarray]:
     """A disabled / blind ToF sensor: every reading is 0.0."""
     truth = np.zeros(n)
     return truth, truth.copy()

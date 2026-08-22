@@ -190,11 +190,6 @@ def _warn_deprecated(old: str, new: str) -> None:
 
 
 # ── Gesture detection constants ───────────────────────────────────────────────
-# Pinch
-_PINCH_ENTER_THRESHOLD = 0.06   # Start pinching if closer than this
-_PINCH_EXIT_THRESHOLD  = 0.09   # Release pinch if further than this
-_PINCH_DEBOUNCE       = 3      # consecutive frames needed to toggle pinch state
-
 # Z-push click
 _Z_HISTORY_LEN       = 10      # rolling window size (frames)
 _Z_MIN_HISTORY       = 4       # frames needed before the window can fire
@@ -270,7 +265,6 @@ class _GestureState:
     def __init__(self, make_filter=None):
         # Position smoothing. `make_filter` supplies a fresh OneEuroFilter so
         # tuning lives on the pipeline while the state object stays reusable.
-        self._make_filter = make_filter
         self.index_filter = make_filter() if make_filter else None
         self.centroid_filter = make_filter() if make_filter else None
 
@@ -284,16 +278,12 @@ class _GestureState:
         self.smooth_px: float = 0.0
         self.smooth_py: float = 0.0
 
-        # Pinch debounce
-        self.pinch_consec: int   = 0
-        self.release_consec: int = 0
         self.pinch_active: bool  = False
 
         # Z-push click — entries are (z_value, (x, y)) so each sample keeps the
         # position it was taken at, for the lateral-drift guard.
         self.z_history: list[tuple[float, tuple[int, int]]] = []
         self.z_cooldown: int        = 0
-        self.z_start_xy             = None   # type: tuple[int,int] | None
         self.z_source: str          = "mp"   # unit of z_history: "mp" | "tof"
 
         # Frames since a hand was last seen (drives the reset below)
@@ -327,11 +317,9 @@ class _GestureState:
             self.index_filter.reset()
         if self.centroid_filter is not None:
             self.centroid_filter.reset()
-        self.pinch_consec = self.release_consec = 0
         self.pinch_active  = False
         self.z_history.clear()
         self.z_cooldown = 0
-        self.z_start_xy = None
         self.z_source = "mp"
         self.lost_frames = 0
         self.was_3_pinching = False
@@ -659,14 +647,6 @@ class VisionPipeline(threading.Thread):
         """Update the movement magnification for tracking and pinch scaling."""
         self.movement_magnification = max(0.5, float(mag))
 
-    def set_noise_duration(self, duration: float):
-        """Dynamically update noise filter window duration in seconds."""
-        self.noise_filter.filter.set_duration(duration)
-
-    def reset_noise_filter(self):
-        """Reset noise filter timing window for state changes / restarts."""
-        self.noise_filter.reset()
-
     # ── ToF Stabilization public API ──────────────────────────────────────────
 
     def begin_stabilization(self, duration: float = 3.0) -> None:
@@ -773,12 +753,17 @@ class VisionPipeline(threading.Thread):
                 # it is the one a headless test uses. A frame older than
                 # DEPTH_STALE_S is dropped rather than reused: a held map is
                 # indistinguishable downstream from a live one.
-                if self.depth_stream is not None:
+                # Snapshot the reference: stop() nulls self.depth_stream from
+                # the game thread, and reading the attribute once means a
+                # mid-iteration shutdown can't turn the None-check into an
+                # AttributeError on the dereferences below.
+                depth_stream = self.depth_stream
+                if depth_stream is not None:
                     self.depth_map = (
-                        self.depth_stream.latest()
-                        if self.depth_stream.age_s() < DEPTH_STALE_S
+                        depth_stream.latest()
+                        if depth_stream.age_s() < DEPTH_STALE_S
                         else None)
-                    self.depth_fps = self.depth_stream.source.fps
+                    self.depth_fps = depth_stream.source.fps
 
                 if (self.camera_available and cap is not None
                         and not getattr(self, 'disable_camera', False)):
@@ -1502,6 +1487,7 @@ class VisionPipeline(threading.Thread):
                 # 16-bit depth values in mm -> converted to meters
                 z_m = float(np.median(valid)) / 1000.0
 
+        measured = z_m is not None
         if z_m is None:
             # Simulated hardware ToF depth reading centered around 0.45m calibrated baseline
             z_m = 0.45 + (lm_z * 0.6)
@@ -1509,10 +1495,18 @@ class VisionPipeline(threading.Thread):
         z_m = round(max(0.15, z_m), 4)
         # Say what it is. The old labels said "ToF Hardware" for a number
         # computed from a MediaPipe landmark, which is how everyone came to
-        # believe this engine had a depth sensor in it.
-        src_label = (f"Depth sensor ({self.depth_device_name})"
-                     if self.depth_active else "Simulated depth (no sensor)")
-        return True, z_m, src_label
+        # believe this engine had a depth sensor in it. That honesty has to
+        # hold per frame too: a sensor that is open but stale (run() drops
+        # maps older than DEPTH_STALE_S) or all holes at the fingertip
+        # contributed nothing to this number, so neither the flag nor the
+        # label may report it as a sensor reading.
+        if measured:
+            return True, z_m, f"Depth sensor ({self.depth_device_name})"
+        if self.depth_active:
+            return False, z_m, f"Depth estimate ({self.depth_device_name}: no reading)"
+        # Simulated mode is an explicit opt-in to fabricated depth, so it
+        # keeps reporting active=True — games asked to be lied to.
+        return True, z_m, "Simulated depth (no sensor)"
 
     # ── Deprecated names ──────────────────────────────────────────────────────
     # "ToF" described a time-of-flight sensor this engine never had: the

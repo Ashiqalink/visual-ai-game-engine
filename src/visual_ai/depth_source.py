@@ -257,12 +257,6 @@ class SyntheticDepthSource(DepthSource):
         frame[edge] = 0
         return frame
 
-    # Where the blob is, for tests that want to check the consumer found it.
-    def expected_hand_mm(self, n: int | None = None) -> int:
-        t = (self._n - 1 if n is None else n) / self.declared_fps
-        span = self.far_mm - self.near_mm
-        return int(self.near_mm + span * (0.5 + 0.5 * np.sin(t * 0.9)))
-
 
 # ── Replay ───────────────────────────────────────────────────────────────────
 
@@ -483,7 +477,6 @@ class RealSenseDepthSource(DepthSource):
         # Device units are metres per integer step; convert to mm.
         self._scale_to_mm = float(depth_sensor.get_depth_scale()) * 1000.0
         self._pipe = pipe
-        self._rs = rs
 
     def _read(self) -> np.ndarray | None:
         if self._pipe is None:
@@ -525,7 +518,6 @@ class DepthStream(threading.Thread):
         # and shadowing it breaks join().
         self._stop_event = threading.Event()
         self.recorder = None
-        self.frames_seen = 0
         self.last_frame_at = 0.0
 
     def latest(self) -> np.ndarray | None:
@@ -549,7 +541,6 @@ class DepthStream(threading.Thread):
                 continue
             with self._lock:
                 self._latest = frame
-                self.frames_seen += 1
                 self.last_frame_at = time.perf_counter()
             if self.recorder is not None:
                 self.recorder.feed(frame)

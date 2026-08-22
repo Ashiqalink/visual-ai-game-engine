@@ -46,7 +46,6 @@ from visual_ai.imaging import to_rgba
 
 __all__ = [
     "PortraitMatter",
-    "portrait_matte",
     "cut_out_person",
     "model_path",
     "MODNET_AVAILABLE",
@@ -289,11 +288,6 @@ def _shared_matter() -> PortraitMatter:
     if _shared is None:
         _shared = PortraitMatter()
     return _shared
-
-
-def portrait_matte(image: np.ndarray) -> np.ndarray:
-    """Soft alpha matte for ``image``, via a lazily-built shared session."""
-    return _shared_matter().matte(image)
 
 
 def cut_out_person(image: np.ndarray) -> np.ndarray:

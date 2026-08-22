@@ -93,7 +93,7 @@ def main():
     )
 
     # Queue for AI camera payloads
-    ai_queue = queue.Queue(maxsize=2)
+    ai_queue = queue.Queue(maxsize=1)
     pipeline = VisionPipeline(result_queue=ai_queue, width=WIDTH, height=HEIGHT)
     pipeline.start()
 
@@ -109,9 +109,15 @@ def main():
             dt = now - last_time
             last_time = now
 
-            # 1. Non-blocking drain of AI Vision queue
-            try:
-                ai_data = ai_queue.get_nowait()
+            # 1. Drain to the freshest payload — the SDK contract every game
+            #    follows: act on the newest frame, never a queued stale one.
+            ai_data = None
+            while True:
+                try:
+                    ai_data = ai_queue.get_nowait()
+                except queue.Empty:
+                    break
+            if ai_data is not None:
                 target_x = ai_data["target_x"]
                 target_y = ai_data["target_y"]
                 if ai_data["frame"] is not None:
@@ -130,9 +136,6 @@ def main():
                     target_ent.vz = -100.0  # Move deeper
                 else:
                     target_ent.vz = 50.0 if target_ent.z < 0 else 0.0
-
-            except queue.Empty:
-                pass
 
             # 2. Advance physics & rotation
             engine.update(dt)
