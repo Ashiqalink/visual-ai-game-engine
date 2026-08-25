@@ -554,6 +554,187 @@ class DepthStream(threading.Thread):
             self.join(timeout=join_timeout)
 
 
+# ── Monocular estimation ─────────────────────────────────────────────────────
+
+#: Path to the depth network's ONNX file. There is no pinned download URL the
+#: way `matting.py` has one for MODNet: FastDepth ships as PyTorch weights from
+#: MIT, and the ONNX exports in circulation are third-party with no digest
+#: worth trusting. So this backend never downloads -- you point it at a file.
+DEPTH_ONNX_ENV_VAR = "VISUAL_AI_DEPTH_ONNX"
+
+#: Metres per output unit. FastDepth is trained on NYU Depth v2, whose targets
+#: are metres, so 1.0 is right for a faithful export. An export that baked in
+#: its own normalisation needs this corrected, which is why it is a knob and
+#: not a constant.
+DEPTH_UNIT_ENV_VAR = "VISUAL_AI_DEPTH_SCALE"
+
+
+class MonocularDepthSource(DepthSource):
+    """Depth *estimated* from the ordinary RGB frame by a small CNN.
+
+    Every other backend in this module reports what a sensor measured. This
+    one reports what a network guessed from a colour image, and the difference
+    matters more than the identical return type suggests: a monocular estimate
+    has no way to know absolute scale from first principles, inherits whatever
+    indoor bias its training set had, and will hallucinate a confident surface
+    where a ToF unit would honestly return 0. It is therefore marked
+    ``synthetic`` and kept out of ``AUTO_CANDIDATES`` -- "auto" means hardware,
+    and a payload must never claim a sensor this machine does not have.
+
+    What it *is* good for: this repo's RGB path currently fabricates depth as
+    ``0.45 + lm_z * 0.6``, a MediaPipe landmark wearing a depth sensor's label.
+    A real network's estimate is a strict improvement on that, and unlike the
+    three hardware backends it can actually run on a machine with one webcam.
+
+    Unlike a sensor, it has no frame source of its own -- it must not open a
+    second capture and fight the pipeline for the camera. Frames are pushed in::
+
+        source = MonocularDepthSource(model_path="fastdepth.onnx")
+        source.open()
+        source.submit(bgr_frame)          # from the capture already running
+        depth = source.read()             # uint16 mm, or None if nothing new
+
+    ``_read`` consumes the submitted frame, so a `DepthStream` polling faster
+    than frames arrive gets None rather than the same estimate counted twice.
+    """
+
+    name = "monocular"
+
+    # Inferred, not measured. See the class docstring -- this flag is the whole
+    # reason the pipeline will not label this "ToF IR Hardware".
+    synthetic = True
+
+    #: FastDepth's native input. Feeding it the full capture frame wastes time
+    #: on detail the first conv layer immediately throws away.
+    DEFAULT_INPUT = (224, 224)
+
+    def __init__(self, model_path: str | None = None,
+                 providers: list[str] | None = None,
+                 unit_metres: float | None = None) -> None:
+        super().__init__()
+        self.model_path = model_path or os.environ.get(DEPTH_ONNX_ENV_VAR, "")
+        self.providers = providers
+        if unit_metres is None:
+            raw = os.environ.get(DEPTH_UNIT_ENV_VAR, "")
+            unit_metres = float(raw) if raw else 1.0
+        self.unit_metres = float(unit_metres)
+        self._session = None
+        self._input_name = ""
+        self._input_size = self.DEFAULT_INPUT
+        self._pending: np.ndarray | None = None
+        #: Inference-only milliseconds for the last frame, for the HUD and the
+        #: bench. Excludes resize and sanitize, which are measured separately.
+        self.last_infer_ms = 0.0
+
+    def _open(self) -> None:
+        if not self.model_path:
+            raise DepthSourceError(
+                f"no depth model given -- pass model_path= or set "
+                f"{DEPTH_ONNX_ENV_VAR} to a FastDepth ONNX file")
+        if not os.path.isfile(self.model_path):
+            raise DepthSourceError(f"no such file: {self.model_path}")
+        try:
+            import onnxruntime as ort
+        except ImportError as exc:
+            raise DepthSourceError(
+                "onnxruntime is not installed, so monocular depth is "
+                "unavailable (pip install onnxruntime)") from exc
+        if cv2 is None:
+            raise DepthSourceError("OpenCV is not available")
+
+        providers = self.providers
+        if providers is None:
+            available = ort.get_available_providers()
+            providers = [p for p in ("CUDAExecutionProvider", "CPUExecutionProvider")
+                         if p in available] or available
+
+        session = ort.InferenceSession(self.model_path, providers=providers)
+        spec = session.get_inputs()[0]
+        if len(spec.shape) != 4:
+            raise DepthSourceError(
+                f"expected a 4-D NCHW input, got {spec.shape} -- is this "
+                f"really a depth network?")
+
+        # Fixed-shape exports fail inside onnxruntime with an opaque rank error
+        # if fed anything else, so honour the declared size when there is one.
+        height, width = spec.shape[2], spec.shape[3]
+        if isinstance(height, int) and isinstance(width, int):
+            self._input_size = (height, width)
+        self._session = session
+        self._input_name = spec.name
+        self.name = f"monocular:{os.path.basename(self.model_path)}"
+
+    def submit(self, frame: np.ndarray | None) -> None:
+        """Hand over the newest colour frame. Cheap: no inference happens here."""
+        self._pending = frame
+
+    def _read(self) -> np.ndarray | None:
+        frame = self._pending
+        self._pending = None          # consume, so a fast poller gets None
+        if frame is None or self._session is None:
+            return None
+
+        tensor = self._preprocess(frame)
+        started = time.perf_counter()
+        output = self._session.run(None, {self._input_name: tensor})[0]
+        self.last_infer_ms = (time.perf_counter() - started) * 1000.0
+
+        depth = np.squeeze(np.asarray(output)).astype(np.float32)
+        if depth.ndim != 2:
+            raise DepthSourceError(
+                f"expected a single-channel depth map, got shape "
+                f"{np.asarray(output).shape}")
+
+        # Returned at the network's own resolution, *not* the frame's. A real
+        # ToF unit's map rarely matches the RGB frame either, and `sample_depth`
+        # already rescales from depth-map space into frame space. Upscaling here
+        # would cost more than the inference (measured: 7.7ms at 640x360, 42ms
+        # at 720p) only for the consumer to resample it straight back down.
+        # Then units -> mm, cast here rather than handed to `sanitize` as a
+        # float. Its float branch has to *guess* whether a float frame is metres
+        # or millimetres, and guesses "metres" whenever the peak is under 100 --
+        # so a genuinely close-range or small-unit map would be multiplied by
+        # 1000 a second time. This backend knows its own units; nothing is
+        # gained by making the sanitiser infer them. `sanitize` still zeroes
+        # anything outside MIN/MAX_VALID_MM, which is what turns the network's
+        # confident nonsense at the extremes into an honest "no return".
+        millimetres = depth * (self.unit_metres * 1000.0)
+        return np.clip(millimetres, 0.0, 65535.0).astype(np.uint16)
+
+    def _preprocess(self, frame: np.ndarray) -> np.ndarray:
+        """BGR uint8 -> NCHW float32, ImageNet-normalised at the model's size."""
+        # Shrink first, flip channels second. The other order hands cv2.resize
+        # a negative-strided view of the full frame, which it cannot walk
+        # linearly -- that alone was most of a 7.2ms preprocess at 640x360.
+        height, width = self._input_size
+        scaled = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+        if scaled.ndim == 3:
+            scaled = scaled[:, :, ::-1]
+
+        # x/255, then (x - mean)/std, folded into one multiply and one subtract
+        # against precomputed per-channel constants, in OpenCV rather than
+        # NumPy. Four full float passes become two SIMD ones: 2.3ms -> 0.28ms,
+        # agreeing with the naive form to 5e-7. FastDepth's MobileNet-V1
+        # encoder carries ImageNet statistics, hence these constants.
+        normalized = np.empty((height, width, 3), dtype=np.float32)
+        cv2.multiply(scaled, _IMAGENET_SCALE, dst=normalized, dtype=cv2.CV_32F)
+        cv2.subtract(normalized, _IMAGENET_OFFSET, dst=normalized)
+        return np.ascontiguousarray(np.transpose(normalized, (2, 0, 1))[None])
+
+    def _close(self) -> None:
+        self._session = None
+        self._pending = None
+
+
+_IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+_IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+# Folded forms of x/255 then (x - mean)/std, so `_preprocess` runs two passes
+# instead of four. Kept beside the constants they come from.
+_IMAGENET_SCALE = (1.0 / (255.0 * _IMAGENET_STD)).astype(np.float32)
+_IMAGENET_OFFSET = (_IMAGENET_MEAN / _IMAGENET_STD).astype(np.float32)
+
+
 # ── Discovery ────────────────────────────────────────────────────────────────
 
 #: Tried in order by "auto". Hardware first, then nothing: "auto" must never
@@ -579,13 +760,16 @@ def open_depth_source(spec: str | DepthSource | None = "auto",
         "openni2[:IDX]"   OpenNI2 through OpenCV
         "uvc[:IDX]"       16-bit Y16 UVC device (default index 1)
         "realsense"       pyrealsense2
+        "monocular[:ONNX]"  depth estimated from RGB; needs frames pushed in
+                            with `submit()`, and is never chosen by "auto"
     """
     if spec is None:
         return None
     if isinstance(spec, DepthSource):
         return spec if spec.open() else None
 
-    spec = str(spec).strip().lower()
+    raw_spec = str(spec).strip()
+    spec = raw_spec.lower()
     if spec in ("", "none", "off", "false"):
         return None
 
@@ -598,7 +782,11 @@ def open_depth_source(spec: str | DepthSource | None = "auto",
                 print(f"[DepthSource] {label}: {source.last_error}")
         return None
 
-    head, _, arg = spec.partition(":")
+    # Split the *raw* spec, not the lowercased one: every argument up to now
+    # was a digit or a path OpenCV opens case-insensitively, but a model path
+    # on a case-sensitive filesystem does not survive .lower().
+    head, _, arg = raw_spec.partition(":")
+    head = head.lower()
     if head == "synthetic":
         source = SyntheticDepthSource()
     elif head == "replay":
@@ -609,6 +797,10 @@ def open_depth_source(spec: str | DepthSource | None = "auto",
         source = UVCDepthSource(int(arg) if arg else 1)
     elif head == "realsense":
         source = RealSenseDepthSource()
+    elif head == "monocular":
+        # "monocular:C:\path\to.onnx" -- the drive letter's colon means the
+        # single partition above already split it, so rejoin what came after.
+        source = MonocularDepthSource(model_path=arg or None)
     else:
         raise ValueError(f"unknown depth source spec: {spec!r}")
 
