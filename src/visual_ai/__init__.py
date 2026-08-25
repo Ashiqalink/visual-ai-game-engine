@@ -74,6 +74,7 @@ from visual_ai.matting import (
     MODNET_AVAILABLE,
     PortraitMatter,
     cut_out_person,
+    matting_device,
 )
 from visual_ai.noise_filter import (
     FilteredGestureDetector,
@@ -218,6 +219,7 @@ __all__ = [
     # Portrait matting (MODNet)
     "PortraitMatter",
     "cut_out_person",
+    "matting_device",
     "MODNET_AVAILABLE",
     # Re-exported dependencies
     "np",
