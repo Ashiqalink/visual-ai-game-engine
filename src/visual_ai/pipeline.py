@@ -90,6 +90,12 @@ Queue payload (dict)
   "tof_z_raw"            : float,
   "depth_device"         : str,      # backend name, "" when there is none
   "depth_fps"            : float,    # sensor frames/s, 0.0 without a sensor
+  "hand_device"          : str,      # where hand tracking runs: "NPU", "GPU",
+                                     # or "CPU (MediaPipe)" — see accel.py. Put
+                                     # it on the HUD: a requested accelerator
+                                     # that fell back to CPU is otherwise
+                                     # indistinguishable in play from one that
+                                     # is working, just slower.
   "stabilizer_state"     : str,       # "inactive" | "sampling" | "active"
   "stabilizer_progress"  : float,
   "stabilizer_noise_amp" : float,     # measured vibration std-dev (m)
@@ -127,6 +133,7 @@ import warnings
 import cv2
 import numpy as np
 
+from visual_ai import accel, devicelog, openvino_hands
 from visual_ai.depth_source import DepthStream, open_depth_source
 from visual_ai.depth_stabilizer import DepthStabilizer
 from visual_ai.gesture_math import get_landmark_velocity
@@ -411,6 +418,7 @@ class VisionPipeline(threading.Thread):
         detect_face: bool = True,
         low_light_boost: bool = True,
         depth_source: str | None = None,
+        hand_device: str | None = None,
     ):
         super().__init__(daemon=True)
         self.result_queue  = result_queue
@@ -526,17 +534,61 @@ class VisionPipeline(threading.Thread):
         # accuracy for a substantially cheaper per-frame inference — worth
         # exposing so a low-end machine can hold its frame rate.
         self.model_complexity = 0 if int(model_complexity) <= 0 else 1
-        if mp_hands_module is not None:
+
+        # The same two networks can run on the NPU or the iGPU through
+        # OpenVINO instead, at a third of the latency and a third of the CPU
+        # (see accel.py for the measurements). Off unless asked for, by
+        # `hand_device=` or `play <title> --accel ...`, and it is tried *first*
+        # so a machine that has it never pays to build MediaPipe's CPU graph
+        # as well. `build` returns None rather than raising when the device is
+        # absent, which is what keeps this a fallback and not a hard dependency.
+        resolved_hand_device = accel.resolve("hand", explicit=hand_device)
+        # Not 0.65 like the MediaPipe path below: see the note on
+        # OpenVINOHands.__init__ for why this path needs the looser gate. Kept
+        # on the instance because which gate a session ran under is not
+        # recoverable afterwards from a file mtime -- see the 2026-08-25 entry
+        # in MISTAKES-FROM-CLAUDE.md. Read it to label a run log.
+        self.hand_gate = 0.45
+        self._mp_hands = openvino_hands.build(
+            device=hand_device,
+            max_num_hands=self.max_hands,
+            model_complexity=self.model_complexity,
+            min_detection_confidence=0.7,
+            min_tracking_confidence=self.hand_gate,
+        )
+        if self._mp_hands is None:
+            resolved_hand_device = None
+        self.hand_device_name = accel.describe(
+            "hand", resolved_hand_device, "CPU (MediaPipe)")
+
+        if self._mp_hands is None and mp_hands_module is not None:
+            self.hand_gate = 0.65
             try:
                 self._mp_hands = mp_hands_module.Hands(
                     static_image_mode=False,
                     max_num_hands=self.max_hands,
                     model_complexity=self.model_complexity,
                     min_detection_confidence=0.7,
-                    min_tracking_confidence=0.65,
+                    min_tracking_confidence=self.hand_gate,
                 )
             except Exception as e:
                 print(f"[VisionPipeline] Hands init warning: {e}")
+
+        # Real play is the only place the accelerator numbers can be confirmed
+        # (see devicelog.py). Off unless switched on, and built here rather
+        # than in `run()` so the header names the devices even for a session
+        # that never gets a camera.
+        self.device_log = devicelog.DeviceLog()
+        self.device_log.session(
+            hand_device=self.hand_device_name,
+            hand_backend=type(self._mp_hands).__name__ if self._mp_hands else "none",
+            accel_preset=accel.preset(),
+            devices=accel.available_devices(),
+            model_complexity=self.model_complexity,
+            max_hands=self.max_hands,
+            width=self.width, height=self.height,
+            capture_fps=self.capture_fps,
+        )
 
         # ── Per-hand gesture state ────────────────────────────────────────────
         # One slot per tracked hand. Slot 0 stays reachable as `self._gs` and
@@ -572,6 +624,8 @@ class VisionPipeline(threading.Thread):
             "has_mediapipe": HAS_MEDIAPIPE,
             "face_tracking": self._mp_face is not None,
             "hand_tracking": self._mp_hands is not None,
+            "hand_device": self.hand_device_name,
+            "device_log": self.device_log.status(),
             "last_error": self.last_error,
         }
 
@@ -744,6 +798,9 @@ class VisionPipeline(threading.Thread):
 
         sim_angle = 0.0
         sim_template: np.ndarray | None = None
+        # Set by a real captured frame and cleared once logged, so a simulated
+        # frame never lands in the device log as if it had been tracked.
+        frame_ms: float | None = None
 
         try:
             while self.running:
@@ -787,7 +844,9 @@ class VisionPipeline(threading.Thread):
                             self.scene_luma = self.low_light_boost.luma
                             self.low_light_gain = self.low_light_boost.gain
 
+                        frame_started = time.perf_counter()
                         payload = self._process_frame(frame)
+                        frame_ms = (time.perf_counter() - frame_started) * 1e3
                     except Exception as frame_err:
                         self.last_error = f"Frame read/process error: {frame_err}"
                         time.sleep(0.01)
@@ -837,6 +896,15 @@ class VisionPipeline(threading.Thread):
                         payload["frame"], self.tof_stabilizer.progress
                     )
 
+                # One line per window, not per frame — see devicelog.py.
+                if self.device_log.enabled and frame_ms is not None:
+                    self.device_log.frame(
+                        latency_ms=frame_ms,
+                        hands=len(payload.get("hands") or ()) if payload else 0,
+                        counters=getattr(self._mp_hands, "timings", None),
+                    )
+                    frame_ms = None
+
                 # Push to queue (drop oldest frame if consumer is lagging)
                 if self.result_queue.full():
                     try:
@@ -867,6 +935,7 @@ class VisionPipeline(threading.Thread):
         """
         self._stop_requested = True
         self.running = False
+        self.device_log.close(hand_device=self.hand_device_name)
         if self.depth_stream is not None:
             self.depth_stream.stop()
             self.depth_stream = None
@@ -992,6 +1061,7 @@ class VisionPipeline(threading.Thread):
             "low_light_gain": self.low_light_gain,
             "depth_device":   self.depth_device_name if self.depth_stream else "",
             "depth_fps":      self.depth_fps,
+            "hand_device":    self.hand_device_name,
             # Hand (merged in from the primary hand's gesture dict)
             **gesture,
             # Every tracked hand, slot-ordered, plus handedness shortcuts.
@@ -1805,6 +1875,7 @@ class VisionPipeline(threading.Thread):
             "low_light_gain": self.low_light_gain,
             "depth_device":   self.depth_device_name if self.depth_stream else "",
             "depth_fps":      self.depth_fps,
+            "hand_device":    self.hand_device_name,
             **self._empty_gesture(),
             "hands":      (),
             "hand_count": 0,
