@@ -122,9 +122,15 @@ def describe(consumer: str, resolved: str | None, fallback: str) -> str:
     """
     if resolved:
         return resolved
-    asked = (os.environ.get({"hand": ENV_HAND_DEVICE,
-                             "matte": ENV_MATTE_DEVICE}.get(consumer, ""), "")
-             or preset()).strip().lower()
+    device_key = {"hand": ENV_HAND_DEVICE,
+                  "matte": ENV_MATTE_DEVICE}.get(consumer, "")
+    asked = os.environ.get(device_key, "").strip().lower()
+    if not asked:
+        asked = os.environ.get(ENV_ACCEL, "").strip().lower()
+        # A typo'd preset (e.g. "aut") is silently normalized to "off" by
+        # preset(); don't report it as if the user asked for something.
+        if asked not in _PRESETS:
+            asked = ""
     if asked in ("", "off", "none"):
         return fallback
     if not openvino_available():

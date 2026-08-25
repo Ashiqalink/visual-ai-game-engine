@@ -605,7 +605,7 @@ _SPRITE_CACHE_MAX = 256
 
 # The frame-independent half of the alpha composite, keyed exactly like
 # _SPRITE_SCALE_CACHE so the same finalizers and invalidation reach it. Held
-# as float32, which is 16 bytes per pixel against the 4 of the RGBA source, so
+# as float32, which is 36 bytes per pixel (3 arrays × 3 channels × 4 B) against the 4 of the RGBA source, so
 # it gets its own tighter bound: this is a speed-for-memory trade and only the
 # sprites actually being drawn need to be in it.
 _SPRITE_BLEND_CACHE: dict[tuple[int, int, int], tuple[np.ndarray, np.ndarray]] = {}
