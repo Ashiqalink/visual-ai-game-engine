@@ -1,5 +1,5 @@
 """
-test_noise_filter.py — Unit tests for NoiseFilter, FilteredGestureDetector, and PipelineNoiseFilter.
+test_noise_filter.py — Unit tests for NoiseFilter, PipelineNoiseFilter, and the landmark filters.
 """
 
 import random
@@ -7,22 +7,12 @@ import time
 import unittest
 
 from visual_ai.noise_filter import (
-    FilteredGestureDetector,
     GenericStreamFilter,
     NoiseFilter,
     OneEuroFilter,
     PipelineNoiseFilter,
     ema_alpha_to_cutoff,
 )
-
-
-class MockDetector:
-    def __init__(self):
-        self.detected_count = 0
-
-    def detect_gesture(self, frame):
-        self.detected_count += 1
-        return "GESTURE_OK"
 
 
 class TestNoiseFilter(unittest.TestCase):
@@ -47,22 +37,6 @@ class TestNoiseFilter(unittest.TestCase):
         # Reset timer
         nf.reset()
         self.assertTrue(nf.is_active())
-
-    def test_filtered_gesture_detector(self):
-        """Test detector wrapper suppresses detect_gesture calls during window."""
-        mock = MockDetector()
-        fgd = FilteredGestureDetector(detector_or_bus=mock, noise_duration=0.2)
-
-        # During noise window, returns None and detector method is NOT called
-        res = fgd.detect_gesture("dummy_frame")
-        self.assertIsNone(res)
-        self.assertEqual(mock.detected_count, 0)
-
-        # Wait past window
-        time.sleep(0.25)
-        res = fgd.detect_gesture("dummy_frame")
-        self.assertEqual(res, "GESTURE_OK")
-        self.assertEqual(mock.detected_count, 1)
 
     def test_pipeline_noise_filter(self):
         """Test PipelineNoiseFilter zeroes out transient gesture flags during window."""

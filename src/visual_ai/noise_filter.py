@@ -1,9 +1,31 @@
 """
-noise_filter.py — Timing & Signal Stream Noise Filter wrapper for Visual AI Game Engine.
+noise_filter.py — landmark smoothing and startup gating for the vision pipeline.
 
-Suppresses transient false-positive gesture events, clicks, pinches, and OCR results
-during camera warm-up, initial state loading, or scene transitions.
-Provides generic input stream smoothing (EMA & One-Euro filter).
+Four things live here, and they are not equally important:
+
+:class:`OneEuroFilter`
+    The one that runs. ``VisionPipeline`` builds two per hand slot — index
+    fingertip and 3-finger centroid — and filters both on every frame. It is
+    what makes a resting hand hold still without making a fast one lag.
+
+:func:`ema_alpha_to_cutoff`
+    Maps a game's existing ``smooth_alpha`` tuning onto the One-Euro
+    ``min_cutoff``, so the old EMA numbers keep meaning something.
+
+:class:`NoiseFilter` / :class:`PipelineNoiseFilter`
+    A startup mute window. For the first ``noise_duration`` seconds it forces
+    the transient trigger keys (pinch flags, ``click_just_fired``, ``z_delta``,
+    ``xy_drift``) down, so auto-exposure garbage on frame one cannot fire a
+    shot before the player has their hand up. Coordinates and frames pass
+    through untouched. It ships **off** — ``noise_duration`` defaults to 0.0 —
+    and costs one float compare per frame in that state. Turn it on per game if
+    that game reads pinch triggers.
+
+:class:`GenericStreamFilter`
+    A fixed-alpha EMA. Nothing in the pipeline uses it any more; One-Euro
+    replaced it precisely because one alpha cannot be both steady at rest and
+    responsive in motion. Kept because ``benchmarks/bench_filters.py`` scores
+    One-Euro against it, and that comparison is the evidence for the swap.
 """
 
 import math
@@ -233,28 +255,6 @@ def ema_alpha_to_cutoff(alpha: float, freq: float = 30.0) -> float:
     """
     a = max(1e-4, min(0.999, float(alpha)))
     return (a * float(freq)) / (2.0 * math.pi * (1.0 - a))
-
-
-class FilteredGestureDetector:
-    """
-    Wrapper class for gesture & OCR detection engines.
-    Intercepts and discards gesture inputs/events during the noise filter duration.
-    """
-
-    def __init__(self, detector_or_bus: Any = None, noise_duration: float = 2.0):
-        self.noise_filter = NoiseFilter(noise_duration=noise_duration)
-        self.detector = detector_or_bus
-
-    def detect_gesture(self, frame: Any) -> Any | None:
-        """
-        Detects gesture on input frame. If within noise duration, returns None without processing.
-        """
-        if self.noise_filter.is_active():
-            return None
-
-        if self.detector and hasattr(self.detector, "detect_gesture"):
-            return self.detector.detect_gesture(frame)
-        return None
 
 
 class PipelineNoiseFilter:
