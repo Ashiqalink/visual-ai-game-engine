@@ -42,11 +42,13 @@ import urllib.request
 
 import numpy as np
 
+from visual_ai import accel
 from visual_ai.imaging import to_rgba
 
 __all__ = [
     "PortraitMatter",
     "cut_out_person",
+    "matting_device",
     "model_path",
     "MODNET_AVAILABLE",
     "MODNET_ENV_VAR",
@@ -186,6 +188,60 @@ def _preprocess(rgb: np.ndarray, size: tuple[int, int]) -> np.ndarray:
     return np.transpose(normalized, (2, 0, 1))[None]
 
 
+class _OpenVINOSession:
+    """
+    The three pieces of the ``onnxruntime`` session API :class:`PortraitMatter`
+    uses, backed by OpenVINO so MODNet can run on the iGPU.
+
+    Worth it: MODNet at 640x352 measures 48.4 ms on this CPU (and eleven cores
+    of it) against 11.9 ms on an Arc 130T. The NPU is not the right home for
+    this one — same speed as the CPU there, and its FP16 weights move the alpha
+    matte by up to 0.13.
+
+    Compilation is per input shape and cached, rather than compiling the model
+    dynamic once, for two reasons: a dynamic compile re-plans on every new
+    shape anyway, and the NPU plugin does not merely refuse a dynamic model —
+    it takes the process down with a segfault that no ``except`` can catch.
+    """
+
+    class _Input:
+        """Stands in for an onnxruntime NodeArg: a name and a shape."""
+
+        def __init__(self, name: str, shape: list):
+            self.name, self.shape = name, shape
+
+    def __init__(self, path: str, device: str):
+        import openvino as ov
+
+        self._core = ov.Core()
+        self._path = path
+        self._model = self._core.read_model(path)
+        self.device = device
+        self._compiled: dict[tuple[int, int], object] = {}
+
+    def get_inputs(self):
+        source = self._model.inputs[0]
+        shape = [dimension.get_length() if dimension.is_static else "?"
+                 for dimension in source.get_partial_shape()]
+        return [self._Input(source.get_any_name(), shape)]
+
+    def _compiled_for(self, height: int, width: int):
+        key = (height, width)
+        if key not in self._compiled:
+            import openvino as ov
+
+            model = self._core.read_model(self._path)
+            model.reshape({model.inputs[0]: ov.PartialShape([1, 3, height, width])})
+            self._compiled[key] = self._core.compile_model(
+                model, self.device, {"PERFORMANCE_HINT": "LATENCY"})
+        return self._compiled[key]
+
+    def run(self, _output_names, feed: dict):
+        tensor = next(iter(feed.values()))
+        compiled = self._compiled_for(int(tensor.shape[2]), int(tensor.shape[3]))
+        return [np.asarray(compiled([tensor])[compiled.output(0)])]
+
+
 class PortraitMatter:
     """
     A loaded MODNet session. Build once, matte many times.
@@ -195,26 +251,50 @@ class PortraitMatter:
     ``path`` overrides the usual lookup; ``providers`` overrides execution
     provider selection, which otherwise prefers CUDA when the installed
     ``onnxruntime`` build offers it and falls back to CPU.
+
+    ``device`` asks for an OpenVINO device instead — "GPU" for the integrated
+    GPU, which is where this network belongs on an Intel Core Ultra machine.
+    It defaults to whatever ``play <title> --accel ...`` selected, and falls
+    back to ``onnxruntime`` (reporting it through :attr:`device_name`) when
+    OpenVINO or the device is not there.
     """
 
     def __init__(self, path: str | None = None,
-                 providers: list[str] | None = None):
-        if not MODNET_AVAILABLE:
-            raise RuntimeError(
-                "onnxruntime is not installed, so MODNet matting is unavailable.\n"
-                "Install it with:\n"
-                "    pip install onnxruntime\n"
-                "Or use visual_ai.imaging.remove_background(), which needs no "
-                "model file, at the cost of a softer edge on hair."
-            )
-        import onnxruntime as ort
+                 providers: list[str] | None = None,
+                 device: str | None = None):
+        weights = path or model_path()
 
-        if providers is None:
-            available = ort.get_available_providers()
-            providers = [p for p in ("CUDAExecutionProvider", "CPUExecutionProvider")
-                         if p in available] or available
+        # The accelerated path first, and only if one was asked for: a machine
+        # with no OpenVINO, no iGPU, or a preset of "off" lands on exactly the
+        # onnxruntime session this class has always built.
+        self._session = None
+        resolved = accel.resolve("matte", explicit=device)
+        if resolved:
+            try:
+                self._session = _OpenVINOSession(weights, resolved)
+            except Exception as exc:
+                print(f"[PortraitMatter] {resolved} unavailable, using onnxruntime: {exc}")
+                resolved = None
+        self.device_name = accel.describe("matte", resolved, "CPU (onnxruntime)")
 
-        self._session = ort.InferenceSession(path or model_path(), providers=providers)
+        if self._session is None:
+            if not MODNET_AVAILABLE:
+                raise RuntimeError(
+                    "onnxruntime is not installed, so MODNet matting is unavailable.\n"
+                    "Install it with:\n"
+                    "    pip install onnxruntime\n"
+                    "Or use visual_ai.imaging.remove_background(), which needs no "
+                    "model file, at the cost of a softer edge on hair."
+                )
+            import onnxruntime as ort
+
+            if providers is None:
+                available = ort.get_available_providers()
+                providers = [p for p in ("CUDAExecutionProvider", "CPUExecutionProvider")
+                             if p in available] or available
+
+            self._session = ort.InferenceSession(weights, providers=providers)
+
         self._input_name = self._session.get_inputs()[0].name
         self._fixed_size = self._declared_size()
 
@@ -293,3 +373,12 @@ def _shared_matter() -> PortraitMatter:
 def cut_out_person(image: np.ndarray) -> np.ndarray:
     """RGBA cutout of the person in ``image``, via a lazily-built shared session."""
     return _shared_matter().cut_out(image)
+
+
+def matting_device() -> str:
+    """
+    Where the shared session is running — "GPU", "CPU (onnxruntime)", or "" if
+    nothing has been matted yet. For a HUD line: the iGPU path is five times
+    faster here, so a game that quietly lost it should be able to say so.
+    """
+    return _shared.device_name if _shared is not None else ""

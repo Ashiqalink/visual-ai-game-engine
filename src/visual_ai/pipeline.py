@@ -90,6 +90,12 @@ Queue payload (dict)
   "tof_z_raw"            : float,
   "depth_device"         : str,      # backend name, "" when there is none
   "depth_fps"            : float,    # sensor frames/s, 0.0 without a sensor
+  "hand_device"          : str,      # where hand tracking runs: "NPU", "GPU",
+                                     # or "CPU (MediaPipe)" — see accel.py. Put
+                                     # it on the HUD: a requested accelerator
+                                     # that fell back to CPU is otherwise
+                                     # indistinguishable in play from one that
+                                     # is working, just slower.
   "stabilizer_state"     : str,       # "inactive" | "sampling" | "active"
   "stabilizer_progress"  : float,
   "stabilizer_noise_amp" : float,     # measured vibration std-dev (m)
@@ -127,6 +133,7 @@ import warnings
 import cv2
 import numpy as np
 
+from visual_ai import accel, devicelog, openvino_hands
 from visual_ai.depth_source import DepthStream, open_depth_source
 from visual_ai.depth_stabilizer import DepthStabilizer
 from visual_ai.gesture_math import get_landmark_velocity
@@ -411,6 +418,7 @@ class VisionPipeline(threading.Thread):
         detect_face: bool = True,
         low_light_boost: bool = True,
         depth_source: str | None = None,
+        hand_device: str | None = None,
     ):
         super().__init__(daemon=True)
         self.result_queue  = result_queue
@@ -491,6 +499,12 @@ class VisionPipeline(threading.Thread):
 
         self.disable_camera: bool   = False
 
+        # Scratch buffer reused every frame by the capture loop, so the
+        # per-frame full-frame conversion stops paying for an allocation each.
+        # Only safe because this one never leaves the capture thread — see the
+        # resize below for the buffer that could not stay reused.
+        self._rgb_buf: np.ndarray | None = None
+
         # ── Detection frame-skip (opt-in) ─────────────────────────────────────
         # Held frames reuse the last MediaPipe detection rather than an
         # interpolated one: a live pipeline has no future detection to
@@ -526,17 +540,61 @@ class VisionPipeline(threading.Thread):
         # accuracy for a substantially cheaper per-frame inference — worth
         # exposing so a low-end machine can hold its frame rate.
         self.model_complexity = 0 if int(model_complexity) <= 0 else 1
-        if mp_hands_module is not None:
+
+        # The same two networks can run on the NPU or the iGPU through
+        # OpenVINO instead, at a third of the latency and a third of the CPU
+        # (see accel.py for the measurements). Tried by default now
+        # (`accel.DEFAULT_PRESET`), and overridable per-consumer with
+        # `hand_device=` or per-run with `play <title> --accel ...`. It is tried
+        # *first* so a machine that has it never pays to build MediaPipe's CPU
+        # graph as well. `build` returns None rather than raising when the
+        # device is absent, which is what keeps this a fallback and not a hard
+        # dependency -- and what makes defaulting it on safe.
+        resolved_hand_device = accel.resolve("hand", explicit=hand_device)
+        self._mp_hands = openvino_hands.build(
+            device=hand_device,
+            max_num_hands=self.max_hands,
+            model_complexity=self.model_complexity,
+            min_detection_confidence=0.7,
+            min_tracking_confidence=0.45,
+        )
+        if self._mp_hands is None:
+            resolved_hand_device = None
+        # Which gate a session ran under is not recoverable from a file mtime —
+        # see the 2026-08-25 entry in MISTAKES-FROM-CLAUDE.md.  0.45 for
+        # OpenVINO (NPU and iGPU both need the looser gate; see the note on
+        # OpenVINOHands.__init__), 0.65 for MediaPipe CPU.  dGPU is untested.
+        self.hand_gate = 0.45 if self._mp_hands is not None else 0.65
+        self.hand_device_name = accel.describe(
+            "hand", resolved_hand_device, "CPU (MediaPipe)")
+
+        if self._mp_hands is None and mp_hands_module is not None:
             try:
                 self._mp_hands = mp_hands_module.Hands(
                     static_image_mode=False,
                     max_num_hands=self.max_hands,
                     model_complexity=self.model_complexity,
                     min_detection_confidence=0.7,
-                    min_tracking_confidence=0.65,
+                    min_tracking_confidence=self.hand_gate,
                 )
             except Exception as e:
                 print(f"[VisionPipeline] Hands init warning: {e}")
+
+        # Real play is the only place the accelerator numbers can be confirmed
+        # (see devicelog.py). Off unless switched on, and built here rather
+        # than in `run()` so the header names the devices even for a session
+        # that never gets a camera.
+        self.device_log = devicelog.DeviceLog()
+        self.device_log.session(
+            hand_device=self.hand_device_name,
+            hand_backend=type(self._mp_hands).__name__ if self._mp_hands else "none",
+            accel_preset=accel.preset(),
+            devices=accel.available_devices(),
+            model_complexity=self.model_complexity,
+            max_hands=self.max_hands,
+            width=self.width, height=self.height,
+            capture_fps=self.capture_fps,
+        )
 
         # ── Per-hand gesture state ────────────────────────────────────────────
         # One slot per tracked hand. Slot 0 stays reachable as `self._gs` and
@@ -572,6 +630,8 @@ class VisionPipeline(threading.Thread):
             "has_mediapipe": HAS_MEDIAPIPE,
             "face_tracking": self._mp_face is not None,
             "hand_tracking": self._mp_hands is not None,
+            "hand_device": self.hand_device_name,
+            "device_log": self.device_log.status(),
             "last_error": self.last_error,
         }
 
@@ -744,6 +804,9 @@ class VisionPipeline(threading.Thread):
 
         sim_angle = 0.0
         sim_template: np.ndarray | None = None
+        # Set by a real captured frame and cleared once logged, so a simulated
+        # frame never lands in the device log as if it had been tracked.
+        frame_ms: float | None = None
 
         try:
             while self.running:
@@ -774,8 +837,24 @@ class VisionPipeline(threading.Thread):
                             continue
 
                         if frame.shape[1] != self.width or frame.shape[0] != self.height:
+                            # Fresh allocation, deliberately. This is the
+                            # fallback path for a driver that ignored the size
+                            # request, so it runs every frame when it runs at
+                            # all, and a reused `dst=` buffer did save 0.2 ms of
+                            # its 0.36 — but this array becomes payload["frame"]
+                            # unchanged (`low_light_boost.apply` returns its
+                            # argument whenever the scene is bright enough to
+                            # need no gain), and the payload contract lets the
+                            # game thread read and draw on it. Reusing the
+                            # buffer meant the capture thread resized into a
+                            # frame a consumer was still holding, and every
+                            # queued payload aliased the same one.
                             frame = cv2.resize(frame, (self.width, self.height))
-                        frame = cv2.flip(frame, 1)   # mirror for natural interaction
+                        # Mirror for natural interaction. In place: a horizontal
+                        # flip swaps column pairs, so src and dst may be the same
+                        # buffer, and the capture buffer is rewritten by the next
+                        # read either way.
+                        cv2.flip(frame, 1, dst=frame)
 
                         # Boost before detection, and hand the boosted frame on
                         # to consumers as well: a player in a dim room needs to
@@ -787,7 +866,9 @@ class VisionPipeline(threading.Thread):
                             self.scene_luma = self.low_light_boost.luma
                             self.low_light_gain = self.low_light_boost.gain
 
+                        frame_started = time.perf_counter()
                         payload = self._process_frame(frame)
+                        frame_ms = (time.perf_counter() - frame_started) * 1e3
                     except Exception as frame_err:
                         self.last_error = f"Frame read/process error: {frame_err}"
                         time.sleep(0.01)
@@ -837,6 +918,15 @@ class VisionPipeline(threading.Thread):
                         payload["frame"], self.tof_stabilizer.progress
                     )
 
+                # One line per window, not per frame — see devicelog.py.
+                if self.device_log.enabled and frame_ms is not None:
+                    self.device_log.frame(
+                        latency_ms=frame_ms,
+                        hands=len(payload.get("hands") or ()) if payload else 0,
+                        counters=getattr(self._mp_hands, "timings", None),
+                    )
+                    frame_ms = None
+
                 # Push to queue (drop oldest frame if consumer is lagging)
                 if self.result_queue.full():
                     try:
@@ -867,6 +957,7 @@ class VisionPipeline(threading.Thread):
         """
         self._stop_requested = True
         self.running = False
+        self.device_log.close(hand_device=self.hand_device_name)
         if self.depth_stream is not None:
             self.depth_stream.stop()
             self.depth_stream = None
@@ -891,10 +982,18 @@ class VisionPipeline(threading.Thread):
         # on entry to every process() call, and with both a face and a hand
         # graph we were paying that copy twice per frame. Nothing downstream
         # mutates `rgb` — the frame handed to consumers is `bgr_frame`.
+        # The buffer is reused across frames rather than reallocated: nothing
+        # keeps a reference to it past the process() calls below, and the
+        # allocation was the larger half of the convert's cost.
         rgb = None
         if run_detection:
-            rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-            rgb.flags.writeable = False
+            buf = self._rgb_buf
+            if buf is None or buf.shape != bgr_frame.shape or buf.dtype != bgr_frame.dtype:
+                buf = self._rgb_buf = np.empty_like(bgr_frame)
+            buf.flags.writeable = True
+            cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB, dst=buf)
+            buf.flags.writeable = False
+            rgb = buf
 
         # ── Face detection ────────────────────────────────────────────────────
         target_x = self.width  / 2.0
@@ -992,6 +1091,7 @@ class VisionPipeline(threading.Thread):
             "low_light_gain": self.low_light_gain,
             "depth_device":   self.depth_device_name if self.depth_stream else "",
             "depth_fps":      self.depth_fps,
+            "hand_device":    self.hand_device_name,
             # Hand (merged in from the primary hand's gesture dict)
             **gesture,
             # Every tracked hand, slot-ordered, plus handedness shortcuts.
@@ -1805,6 +1905,7 @@ class VisionPipeline(threading.Thread):
             "low_light_gain": self.low_light_gain,
             "depth_device":   self.depth_device_name if self.depth_stream else "",
             "depth_fps":      self.depth_fps,
+            "hand_device":    self.hand_device_name,
             **self._empty_gesture(),
             "hands":      (),
             "hand_count": 0,

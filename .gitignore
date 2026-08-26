@@ -62,3 +62,7 @@ logs/
 benchmarks/bench_report.html
 benchmarks/*.json
 
+
+# Device logs from a real play session (visual_ai/devicelog.py). Machine-local
+# diagnostics, never committed.
+data/device-logs/

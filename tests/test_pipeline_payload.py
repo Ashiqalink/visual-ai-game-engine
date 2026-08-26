@@ -10,14 +10,20 @@ Pins down:
     for it every frame
   * ToF depth was sampled at RGB-frame coordinates against a depth map of a
     different resolution, and from a single (often zero) pixel
+  * payload["frame"] aliased the capture thread's reused resize buffer on any
+    camera that ignored the requested size, so consumers drew on an array
+    being rewritten under them and every queued payload held the same one
 """
 
 import math
 import queue
+import time
 import unittest
+from unittest import mock
 
 import numpy as np
 
+from visual_ai import pipeline as pipeline_module
 from visual_ai.pipeline import VisionPipeline
 
 
@@ -40,6 +46,9 @@ def _hand(phase=0.0, jitter=0.0, push=0.0):
     pts[16] = (0.66 + sway, 0.60)
     pts[20] = (0.70 + sway, 0.60)
     return [_LM(x + jitter, y + jitter, -0.02 - push) for (x, y) in pts]
+
+
+_DT = 1.0 / 30.0     # step the clock at capture rate, not at loop speed
 
 
 def _pipeline(**kwargs):
@@ -75,9 +84,15 @@ class TestPayloadContract(unittest.TestCase):
             self.assertIn(key, payload)
 
     def test_pinch_pos_is_the_smoothed_centroid(self):
+        # Step the clock rather than letting the One-Euro filter read
+        # `time.time()`: its cutoff is set from dt, so on a loaded machine a
+        # long dt opens the filter up until the smoothed centroid rounds to the
+        # same pixel as the raw one and this assertion fails for reasons that
+        # have nothing to do with smoothing.
         gesture = None
         for i in range(30):
-            gesture = self.p._extract_gesture(_hand(phase=i * 0.3))
+            gesture = self.p._extract_gesture(_hand(phase=i * 0.3),
+                                              now=1000.0 + i * _DT)
         self.assertNotEqual(gesture["pinch_pos"], gesture["pinch_pos_raw"])
 
     def test_smoothing_reduces_reported_jitter(self):
@@ -297,6 +312,71 @@ class TestCalibrationOverlayCache(unittest.TestCase):
             self.assertEqual(out.shape, (h, w, 3))
             # The navy wash is 0.78 of (15, 10, 30) over a black frame.
             self.assertEqual(tuple(int(v) for v in out[0, 0]), (12, 8, 23))
+
+
+class _IgnoresSizeRequestCap:
+    """A camera driver that hands back a size nobody asked for.
+
+    The only path that reaches the capture loop's `cv2.resize`, so it is the
+    only way to exercise the frame the payload actually carries on such a
+    machine. Frames are bright on purpose: `LowLightBoost.apply` returns its
+    argument untouched once the scene needs no gain, which is what let a reused
+    resize buffer reach consumers unnoticed.
+    """
+
+    def __init__(self, index):
+        self.n = 0
+
+    def isOpened(self):
+        return True
+
+    def set(self, *args):
+        return False
+
+    def get(self, *args):
+        return 0
+
+    def read(self):
+        self.n += 1
+        frame = np.full((720, 1280, 3), 185, dtype=np.uint8)
+        frame[0, 0] = self.n % 255          # so identical content cannot mask reuse
+        return True, frame
+
+    def release(self):
+        pass
+
+
+class TestFrameOwnership(unittest.TestCase):
+    """payload["frame"] belongs to the payload, not to the capture thread."""
+
+    def test_resized_frames_are_not_shared_between_payloads(self):
+        # The capture loop resized into one reused buffer and handed it out as
+        # payload["frame"], so the game thread read and drew on an array the
+        # capture thread was rewriting, and every queued payload aliased it.
+        result_queue = queue.Queue(maxsize=4)
+        pipeline = VisionPipeline(result_queue, width=640, height=480,
+                                  detect_face=False, max_hands=1)
+
+        with mock.patch.object(pipeline_module.cv2, "VideoCapture",
+                               _IgnoresSizeRequestCap):
+            pipeline.start()
+            try:
+                frames = []
+                deadline = time.time() + 20.0
+                while len(frames) < 3 and time.time() < deadline:
+                    try:
+                        frames.append(result_queue.get(timeout=1.0)["frame"])
+                    except queue.Empty:
+                        pass
+            finally:
+                pipeline.running = False
+                pipeline.join(timeout=5.0)
+
+        self.assertEqual(len(frames), 3, "capture loop produced too few payloads")
+        for frame in frames:
+            self.assertEqual(frame.shape, (480, 640, 3))
+        ids = {id(frame) for frame in frames}
+        self.assertEqual(len(ids), 3, "payloads share one frame buffer")
 
 
 if __name__ == "__main__":
