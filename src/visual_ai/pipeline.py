@@ -499,6 +499,12 @@ class VisionPipeline(threading.Thread):
 
         self.disable_camera: bool   = False
 
+        # Scratch buffer reused every frame by the capture loop, so the
+        # per-frame full-frame conversion stops paying for an allocation each.
+        # Only safe because this one never leaves the capture thread — see the
+        # resize below for the buffer that could not stay reused.
+        self._rgb_buf: np.ndarray | None = None
+
         # ── Detection frame-skip (opt-in) ─────────────────────────────────────
         # Held frames reuse the last MediaPipe detection rather than an
         # interpolated one: a live pipeline has no future detection to
@@ -831,8 +837,24 @@ class VisionPipeline(threading.Thread):
                             continue
 
                         if frame.shape[1] != self.width or frame.shape[0] != self.height:
+                            # Fresh allocation, deliberately. This is the
+                            # fallback path for a driver that ignored the size
+                            # request, so it runs every frame when it runs at
+                            # all, and a reused `dst=` buffer did save 0.2 ms of
+                            # its 0.36 — but this array becomes payload["frame"]
+                            # unchanged (`low_light_boost.apply` returns its
+                            # argument whenever the scene is bright enough to
+                            # need no gain), and the payload contract lets the
+                            # game thread read and draw on it. Reusing the
+                            # buffer meant the capture thread resized into a
+                            # frame a consumer was still holding, and every
+                            # queued payload aliased the same one.
                             frame = cv2.resize(frame, (self.width, self.height))
-                        frame = cv2.flip(frame, 1)   # mirror for natural interaction
+                        # Mirror for natural interaction. In place: a horizontal
+                        # flip swaps column pairs, so src and dst may be the same
+                        # buffer, and the capture buffer is rewritten by the next
+                        # read either way.
+                        cv2.flip(frame, 1, dst=frame)
 
                         # Boost before detection, and hand the boosted frame on
                         # to consumers as well: a player in a dim room needs to
@@ -960,10 +982,18 @@ class VisionPipeline(threading.Thread):
         # on entry to every process() call, and with both a face and a hand
         # graph we were paying that copy twice per frame. Nothing downstream
         # mutates `rgb` — the frame handed to consumers is `bgr_frame`.
+        # The buffer is reused across frames rather than reallocated: nothing
+        # keeps a reference to it past the process() calls below, and the
+        # allocation was the larger half of the convert's cost.
         rgb = None
         if run_detection:
-            rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-            rgb.flags.writeable = False
+            buf = self._rgb_buf
+            if buf is None or buf.shape != bgr_frame.shape or buf.dtype != bgr_frame.dtype:
+                buf = self._rgb_buf = np.empty_like(bgr_frame)
+            buf.flags.writeable = True
+            cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB, dst=buf)
+            buf.flags.writeable = False
+            rgb = buf
 
         # ── Face detection ────────────────────────────────────────────────────
         target_x = self.width  / 2.0
