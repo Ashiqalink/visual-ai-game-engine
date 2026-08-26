@@ -77,7 +77,6 @@ from visual_ai.matting import (
     matting_device,
 )
 from visual_ai.noise_filter import (
-    FilteredGestureDetector,
     GenericStreamFilter,
     NoiseFilter,
     OneEuroFilter,
@@ -136,7 +135,6 @@ __all__ = [
     "GameEngine",
     "CPP_ENGINE_AVAILABLE",
     "NoiseFilter",
-    "FilteredGestureDetector",
     "PipelineNoiseFilter",
     "GenericStreamFilter",
     "OneEuroFilter",
