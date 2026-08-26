@@ -537,32 +537,32 @@ class VisionPipeline(threading.Thread):
 
         # The same two networks can run on the NPU or the iGPU through
         # OpenVINO instead, at a third of the latency and a third of the CPU
-        # (see accel.py for the measurements). Off unless asked for, by
-        # `hand_device=` or `play <title> --accel ...`, and it is tried *first*
-        # so a machine that has it never pays to build MediaPipe's CPU graph
-        # as well. `build` returns None rather than raising when the device is
-        # absent, which is what keeps this a fallback and not a hard dependency.
+        # (see accel.py for the measurements). Tried by default now
+        # (`accel.DEFAULT_PRESET`), and overridable per-consumer with
+        # `hand_device=` or per-run with `play <title> --accel ...`. It is tried
+        # *first* so a machine that has it never pays to build MediaPipe's CPU
+        # graph as well. `build` returns None rather than raising when the
+        # device is absent, which is what keeps this a fallback and not a hard
+        # dependency -- and what makes defaulting it on safe.
         resolved_hand_device = accel.resolve("hand", explicit=hand_device)
-        # Not 0.65 like the MediaPipe path below: see the note on
-        # OpenVINOHands.__init__ for why this path needs the looser gate. Kept
-        # on the instance because which gate a session ran under is not
-        # recoverable afterwards from a file mtime -- see the 2026-08-25 entry
-        # in MISTAKES-FROM-CLAUDE.md. Read it to label a run log.
-        self.hand_gate = 0.45
         self._mp_hands = openvino_hands.build(
             device=hand_device,
             max_num_hands=self.max_hands,
             model_complexity=self.model_complexity,
             min_detection_confidence=0.7,
-            min_tracking_confidence=self.hand_gate,
+            min_tracking_confidence=0.45,
         )
         if self._mp_hands is None:
             resolved_hand_device = None
+        # Which gate a session ran under is not recoverable from a file mtime —
+        # see the 2026-08-25 entry in MISTAKES-FROM-CLAUDE.md.  0.45 for
+        # OpenVINO (NPU and iGPU both need the looser gate; see the note on
+        # OpenVINOHands.__init__), 0.65 for MediaPipe CPU.  dGPU is untested.
+        self.hand_gate = 0.45 if self._mp_hands is not None else 0.65
         self.hand_device_name = accel.describe(
             "hand", resolved_hand_device, "CPU (MediaPipe)")
 
         if self._mp_hands is None and mp_hands_module is not None:
-            self.hand_gate = 0.65
             try:
                 self._mp_hands = mp_hands_module.Hands(
                     static_image_mode=False,

@@ -42,8 +42,26 @@ class _Devices:
 
 class TestResolve(unittest.TestCase):
 
-    def test_off_is_the_default(self):
+    def test_auto_is_the_default(self):
+        # Nothing in the environment: the accelerated path is what a plain
+        # `play sling` gets now.
         with _Devices("CPU", "GPU", "NPU"):
+            self.assertEqual(accel.resolve("hand"), "NPU")
+            self.assertEqual(accel.resolve("matte"), "GPU")
+
+    def test_the_default_is_still_the_cpu_path_on_a_machine_without_devices(self):
+        # The whole safety argument for defaulting to "auto": every way it can
+        # fail lands back on exactly the CPU code that used to be the default.
+        with _Devices("CPU"):
+            self.assertIsNone(accel.resolve("hand"))
+            self.assertIsNone(accel.resolve("matte"))
+        with _Devices():
+            self.assertIsNone(accel.resolve("hand"))
+            self.assertIsNone(accel.resolve("matte"))
+
+    def test_an_explicit_preset_of_off_beats_the_default(self):
+        with _Devices("CPU", "GPU", "NPU"):
+            os.environ[accel.ENV_ACCEL] = "off"
             self.assertIsNone(accel.resolve("hand"))
             self.assertIsNone(accel.resolve("matte"))
 
@@ -57,6 +75,15 @@ class TestResolve(unittest.TestCase):
         with _Devices("CPU", "GPU"):
             os.environ[accel.ENV_ACCEL] = "auto"
             self.assertEqual(accel.resolve("hand"), "GPU")
+
+    def test_auto_on_gpu_present_no_npu_resolves_to_gpu_not_cpu(self):
+        # GPU-present/no-NPU is *not* a fallback to the CPU path: hands
+        # resolve to GPU (OpenVINO, hand_gate 0.45), not None (MediaPipe,
+        # 0.65).  The old safety claim missed this case.
+        with _Devices("CPU", "GPU"):
+            self.assertEqual(accel.resolve("hand"), "GPU")
+            # Matting also goes to GPU in this topology.
+            self.assertEqual(accel.resolve("matte"), "GPU")
 
     def test_auto_leaves_matting_on_the_cpu_without_an_igpu(self):
         # "matte" deliberately has no CPU entry: OpenVINO CPU is not better
@@ -72,6 +99,9 @@ class TestResolve(unittest.TestCase):
 
     def test_an_explicit_device_beats_a_preset_of_off(self):
         with _Devices("CPU", "GPU", "NPU"):
+            # Pinned, not left unset: unset is "auto" now, and this test is
+            # about beating "off" specifically.
+            os.environ[accel.ENV_ACCEL] = "off"
             self.assertEqual(accel.resolve("hand", explicit="GPU"), "GPU")
 
     def test_an_explicit_off_beats_a_preset_of_auto(self):
@@ -169,8 +199,16 @@ class TestGraphGeometry(unittest.TestCase):
 
 class TestBuildFallsBack(unittest.TestCase):
 
-    def test_build_returns_none_when_nothing_was_asked_for(self):
+    def test_build_returns_none_when_the_preset_is_off(self):
+        # Was "when nothing was asked for" — nothing asked for is "auto" now,
+        # and on this machine that really does build, so the assertion had to
+        # name the case it is actually about.
         with _Devices("CPU", "GPU", "NPU"):
+            os.environ[accel.ENV_ACCEL] = "off"
+            self.assertIsNone(openvino_hands.build())
+
+    def test_build_returns_none_when_no_device_is_present(self):
+        with _Devices():
             self.assertIsNone(openvino_hands.build())
 
     def test_build_returns_none_rather_than_raising_on_a_dead_device(self):

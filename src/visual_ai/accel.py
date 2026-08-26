@@ -14,10 +14,12 @@ CPU, and it leaves the iGPU free for the game's own drawing — and matting and
 segmentation on the iGPU, which is 4x the CPU there and where the NPU's FP16
 weights cost real accuracy on an alpha matte.
 
-None of this is on unless asked for. `resolve` returns None when the preference
-is "off" (the default), when OpenVINO is not installed, or when the requested
-device is not present — the callers then keep their existing CPU path, and say
-so on the HUD rather than silently running something else.
+That policy is the default: with nothing asked for, the preset is "auto". It
+costs nothing to try — `resolve` returns None when the preference is "off", when
+OpenVINO is not installed, or when the requested device is not present, and the
+callers then keep their existing CPU path. What it is *not* is silent: the
+device actually in use is on the HUD either way, and `describe` says why when
+an explicitly requested device was not the one that won.
 """
 from __future__ import annotations
 
@@ -40,6 +42,16 @@ _PRESETS: dict[str, dict[str, tuple[str, ...]]] = {
 }
 
 PRESETS = tuple(_PRESETS)
+
+#: The preset when nothing asked for one. "auto" rather than "off" because the
+#: CPU path costs 19.4 ms of a 16.7 ms frame budget and every fallback out of
+#: "auto" lands back on the CPU code when no accelerator is reachable.  When a
+#: GPU is present but the NPU is not, hands run on the iGPU through OpenVINO
+#: with a looser tracking gate (0.45 vs MediaPipe's 0.65); this is faster and
+#: intentional for iGPUs, but not a no-op.  dGPU behavior at 0.45 is untested.
+#: A typo'd preset still falls back to "off" — that one is a mistake, and
+#: running it as "auto" would hide it.
+DEFAULT_PRESET = "auto"
 
 
 def openvino_available() -> bool:
@@ -78,8 +90,9 @@ def device_name(device: str) -> str:
 
 
 def preset(explicit: str | None = None) -> str:
-    """The active ``--accel`` preset: the argument, then the environment, then off."""
-    value = (explicit or os.environ.get(ENV_ACCEL) or "off").strip().lower()
+    """The active ``--accel`` preset: the argument, then the environment, then
+    ``DEFAULT_PRESET``."""
+    value = (explicit or os.environ.get(ENV_ACCEL) or DEFAULT_PRESET).strip().lower()
     return value if value in _PRESETS else "off"
 
 
@@ -122,6 +135,11 @@ def describe(consumer: str, resolved: str | None, fallback: str) -> str:
     """
     if resolved:
         return resolved
+    # Deliberately the raw environment, not `preset()`: the default is "auto"
+    # now, so going through `preset()` would append "(auto unavailable)" to
+    # every CPU-only machine's HUD forever - including every frozen .exe, which
+    # excludes OpenVINO on purpose. This suffix is for a request that lost, and
+    # nobody requested the default.
     device_key = {"hand": ENV_HAND_DEVICE,
                   "matte": ENV_MATTE_DEVICE}.get(consumer, "")
     asked = os.environ.get(device_key, "").strip().lower()

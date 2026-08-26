@@ -271,13 +271,13 @@ class OpenVINOHands:
                  model_complexity: int = 1,
                  min_detection_confidence: float = 0.7,
                  # Looser than MediaPipe's 0.65 on purpose. The presence scalar
-                 # comes back lower here than from the CPU graph -- the NPU runs
-                 # these weights in FP16 -- so 0.65 drops a hand that is still
-                 # plainly in frame, and every drop costs a full palm
+                 # comes back lower here than from the CPU graph — both the NPU
+                 # (FP16) and the iGPU exhibit this — so 0.65 drops a hand that
+                 # is still plainly in frame, and every drop costs a full palm
                  # re-detection. Sling's 2026-08-25 --accel npu logs show the
                  # cost: 6-11 tracking dropouts a run against 2-5 on CPU, and
                  # four shots fired with cause 'lost' (none on CPU) because the
-                 # hand vanished mid-pull.
+                 # hand vanished mid-pull. dGPU behavior at 0.45 is untested.
                  min_tracking_confidence: float = 0.45,
                  async_detector: bool = True):
         try:
