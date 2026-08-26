@@ -18,6 +18,8 @@ or a pre-commit hook as-is. Each bench also runs standalone:
 ```bash
 python benchmarks/bench_stabilizer.py
 python benchmarks/bench_filters.py --html
+python benchmarks/bench_max_hands.py --cpu     # force the MediaPipe CPU path
+python benchmarks/bench_stage_costs.py         # profile only, always exits 0
 ```
 
 ## What you get
@@ -49,6 +51,8 @@ preserved %**: it must kill lid shake without flattening a punch.
 | `run_all.py` | CLI entry point, summary, HTML/JSON output |
 | `bench_stabilizer.py` | 9 scenarios for `ToFStabilizer`, plus a `gate_k` sweep |
 | `bench_filters.py` | 7 scenarios × 5 filter tunings, plus the One-Euro-vs-EMA verdict |
+| `bench_max_hands.py` | what an unused second hand slot costs (`--only hands`) |
+| `bench_stage_costs.py` | per-frame cost of each pipeline stage — profile, not scored |
 | `signals.py` | seeded synthetic streams, each returning `(truth, raw)` |
 | `metrics.py` | jitter / rmse / lag / overshoot / settling / spike-leak / throughput |
 | `harness.py` | import bootstrap, fake clock, tables, sparklines, check records |
@@ -84,6 +88,37 @@ Two thresholds are deliberately loose, with the reasoning in the source:
 * `tracker glitches / error vs truth` — One-Euro reads a single-frame glitch as
   fast motion and opens its cutoff, so it leaks more of a spike than a fixed
   EMA. The real guard there is the worst-excursion cap.
+
+## The hand-budget bench
+
+`bench_max_hands.py` answers a different question from the rest: not "is this
+filter accurate" but "does a config default cost anything". MediaPipe re-runs
+palm detection every frame while it is tracking fewer hands than
+`max_num_hands`, so a one-hand game that leaves `VisionPipeline(max_hands=2)`
+alone pays for a search that never finds anything.
+
+Two things make the result trustworthy rather than merely favourable:
+
+* **Frames are bucketed.** Frames with a hand tracked carry the claim; frames
+  without one are the control, because both budgets run palm detection there and
+  so must cost the same. `no-hand parity` fails if they diverge — that is the
+  check that separates a real effect from thermal drift. The pooled median is
+  printed too, and is *not* the number to quote: `hand_motion.mp4` has a hand in
+  about a quarter of its frames, so pooling dilutes the effect roughly fourfold
+  against what a game with a hand up would feel.
+* **Cost is scored with equivalence.** A budget that is cheap because it stopped
+  finding the hand is not a saving, so fingertip RMSE and detection rate are
+  both checked against the `max_hands=2` run.
+
+It needs `fixtures/hand_motion.mp4`, and joins `run_all.py` automatically when
+that file is present. `--cpu` forces MediaPipe's CPU graph instead of OpenVINO;
+run it that way before shipping a change, since it is what a machine without an
+Intel accelerator will run and where the gap is widest.
+
+`bench_stage_costs.py` is the counterweight: a microsecond-level profile of the
+per-frame stages *around* the detector, for when someone proposes stripping the
+payload keys a game does not read. It has no ground truth and no checks, so it
+stays out of `run_all.py` and always exits 0.
 
 ## Adding a scenario
 
