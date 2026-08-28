@@ -571,7 +571,7 @@ class TestMattingFallback(unittest.TestCase):
 
 
 class _FakeORT:
-    """The two methods `PortraitMatter` asks an onnxruntime session for."""
+    """The three methods `PortraitMatter` asks an onnxruntime session for."""
 
     def __init__(self, providers=None):
         self.providers = providers
@@ -582,6 +582,11 @@ class _FakeORT:
 
     def get_inputs(self):
         return [self._Arg()]
+
+    def get_providers(self):
+        """What onnxruntime *accepted*, which is why the HUD reads it back
+        rather than trusting the requested list."""
+        return list(self.providers or ["CPUExecutionProvider"])
 
     def run(self, _names, feed):
         tensor = next(iter(feed.values()))

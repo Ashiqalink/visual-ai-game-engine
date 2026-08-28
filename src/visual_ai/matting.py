@@ -249,8 +249,11 @@ class PortraitMatter:
     Constructing this loads the weights and builds the ``onnxruntime`` graph,
     which takes long enough that doing it per call would dominate the runtime.
     ``path`` overrides the usual lookup; ``providers`` overrides execution
-    provider selection, which otherwise prefers CUDA when the installed
-    ``onnxruntime`` build offers it and falls back to CPU.
+    provider selection, which otherwise prefers CUDA, then DirectML, when the
+    installed ``onnxruntime`` build offers them, and falls back to CPU.
+    DirectML is what an AMD or NVIDIA machine gets here, since the OpenVINO
+    device below is Intel-only; it needs the ``onnxruntime-directml`` wheel,
+    which replaces plain ``onnxruntime`` rather than sitting beside it.
 
     ``device`` asks for an OpenVINO device instead — "GPU" for the integrated
     GPU, which is where this network belongs on an Intel Core Ultra machine.
@@ -290,10 +293,26 @@ class PortraitMatter:
 
             if providers is None:
                 available = ort.get_available_providers()
-                providers = [p for p in ("CUDAExecutionProvider", "CPUExecutionProvider")
+                # CUDA where an onnxruntime-gpu build offers it, then DirectML:
+                # the vendor-neutral Windows path, and the only accelerated
+                # option on AMD and NVIDIA, whose GPUs OpenVINO's Intel-only
+                # GPU plugin never enumerates. A provider the installed wheel
+                # lacks filters out here, so this is a no-op on the CPU wheel.
+                providers = [p for p in ("CUDAExecutionProvider",
+                                         "DmlExecutionProvider",
+                                         "CPUExecutionProvider")
                              if p in available] or available
 
             self._session = ort.InferenceSession(weights, providers=providers)
+            # Which provider won is not knowable until the session exists:
+            # onnxruntime drops one it cannot initialize without raising, so
+            # asking for DirectML is not evidence of getting it. Naming the
+            # active one keeps a silent fall to CPU visible on the HUD.
+            active = (self._session.get_providers() or ["CPUExecutionProvider"])[0]
+            self.device_name = accel.describe("matte", resolved, {
+                "CUDAExecutionProvider": "GPU (onnxruntime CUDA)",
+                "DmlExecutionProvider": "GPU (onnxruntime DirectML)",
+            }.get(active, "CPU (onnxruntime)"))
 
         self._input_name = self._session.get_inputs()[0].name
         self._fixed_size = self._declared_size()
@@ -377,8 +396,9 @@ def cut_out_person(image: np.ndarray) -> np.ndarray:
 
 def matting_device() -> str:
     """
-    Where the shared session is running — "GPU", "CPU (onnxruntime)", or "" if
-    nothing has been matted yet. For a HUD line: the iGPU path is five times
-    faster here, so a game that quietly lost it should be able to say so.
+    Where the shared session is running — "GPU", "GPU (onnxruntime CUDA)",
+    "GPU (onnxruntime DirectML)", "CPU (onnxruntime)", or "" if nothing has
+    been matted yet. For a HUD line: the iGPU path is five times faster here,
+    so a game that quietly lost it should be able to say so.
     """
     return _shared.device_name if _shared is not None else ""
