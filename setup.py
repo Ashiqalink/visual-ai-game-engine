@@ -123,5 +123,8 @@ setup(
         "numpy>=1.20.0",
         "opencv-python>=4.8.0",
         "mediapipe>=0.10.14,<=0.10.35",
+        # Kept in step with pyproject.toml; see the note there for why this is
+        # a hard dependency rather than an optional one.
+        "pygame>=2.5.0",
     ],
 )

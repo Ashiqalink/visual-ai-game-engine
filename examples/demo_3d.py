@@ -19,11 +19,12 @@ from visual_ai import (
     Renderer3D,
     Transform3D,
     VisionPipeline,
+    display,
 )
 
 
 def main():
-    WIDTH, HEIGHT = 800, 600
+    WIDTH, HEIGHT = 1920, 1080
 
     print(f"[3D Demo] C++ Core built: {'yes' if CPP_ENGINE_AVAILABLE else 'no'} "
           "(this demo runs on whichever engine loaded)")
@@ -205,14 +206,15 @@ def main():
                 cv2.LINE_AA,
             )
 
-            cv2.imshow("Visual AI - 3D Elements Demo", canvas)
-            key = cv2.waitKey(1) & 0xFF
+            # `27` is also what closing the window reports, so the X button now
+            # quits the demo instead of killing it mid-frame.
+            key = display.show("Visual AI - 3D Elements Demo", canvas)
             if key == 27 or key == ord("q"):
                 break
 
     finally:
         pipeline.stop()
-        cv2.destroyAllWindows()
+        display.close_all()
 
 
 if __name__ == "__main__":

@@ -28,6 +28,7 @@ import sys
 import cv2
 import numpy as np
 
+from visual_ai import display
 from visual_ai.gesture_mlp import landmarks_to_features
 
 try:
@@ -77,6 +78,8 @@ def main():
             pass
 
     cap = cv2.VideoCapture(args.camera)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
     if not cap.isOpened():
         print(f"[collect] could not open camera {args.camera}", file=sys.stderr)
         return 1
@@ -122,8 +125,10 @@ def main():
                 cv2.putText(frame, "no hand detected", (10, frame.shape[0] - 15),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-            cv2.imshow("collect_gesture_samples", frame)
-            key = cv2.waitKey(1) & 0xFF
+            # `27` is also what closing the window reports, so the X button now
+            # leaves through the `_save` below instead of discarding the samples
+            # collected so far.
+            key = display.show("collect_gesture_samples", frame)
 
             if key in (27, ord('q')):
                 break
@@ -141,7 +146,7 @@ def main():
     finally:
         cap.release()
         hands.close()
-        cv2.destroyAllWindows()
+        display.close_all()
 
     _save(args.out, features, sample_labels)
     return 0

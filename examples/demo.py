@@ -9,11 +9,11 @@ import time
 import cv2
 import numpy as np
 
-from visual_ai import CPP_ENGINE_AVAILABLE, GameEngine, VisionPipeline
+from visual_ai import CPP_ENGINE_AVAILABLE, GameEngine, VisionPipeline, display
 
 
 def main():
-    WIDTH, HEIGHT = 800, 600
+    WIDTH, HEIGHT = 1920, 1080
 
     print(f"[Demo] C++ Core Acceleration: "
           f"{'Enabled' if CPP_ENGINE_AVAILABLE else 'Disabled (Fallback)'}")
@@ -170,17 +170,17 @@ def main():
             cv2.putText(render_canvas, hand_label, (15, 80),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 200), 1)
 
-            # Display window
-            cv2.imshow("Visual AI Library Demo", render_canvas)
+            # Display window. `27` is also what closing the window reports, so
+            # the X button now quits the demo instead of killing it mid-frame.
+            key = display.show("Visual AI Library Demo", render_canvas)
 
             # Handle exit
-            key = cv2.waitKey(1) & 0xFF
             if key in (27, ord('q')):
                 break
 
     finally:
         pipeline.stop()
-        cv2.destroyAllWindows()
+        display.close_all()
         print("[Demo] Engine stopped cleanly.")
 
 

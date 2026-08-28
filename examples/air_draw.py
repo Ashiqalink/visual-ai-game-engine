@@ -33,7 +33,7 @@ except ImportError:
 import cv2
 import numpy as np
 
-from visual_ai import VisionPipeline
+from visual_ai import VisionPipeline, display
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -49,8 +49,8 @@ PALETTE = [                       # BGR
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
-    parser.add_argument("--width", type=int, default=960)
-    parser.add_argument("--height", type=int, default=540)
+    parser.add_argument("--width", type=int, default=1920)
+    parser.add_argument("--height", type=int, default=1080)
     args = parser.parse_args()
 
     ai_queue: queue.Queue = queue.Queue(maxsize=1)
@@ -141,8 +141,10 @@ def main() -> int:
                 cv2.putText(view, flash, (15, 64), FONT, 0.55,
                             (220, 200, 60), 2, cv2.LINE_AA)
 
-            cv2.imshow("visual_ai air draw", view)
-            key = cv2.waitKey(1) & 0xFF
+            # `27` is also what closing the window reports, so the X button now
+            # leaves through the same path - and unsaved ink is still lost, as
+            # it was before.
+            key = display.show("visual_ai air draw", view)
             if key in (27, ord("q")):
                 break
             elif ord("1") <= key <= ord("6"):
@@ -169,7 +171,7 @@ def main() -> int:
                 print(f"[air_draw] saved {path.resolve()}")
     finally:
         pipeline.stop()
-        cv2.destroyAllWindows()
+        display.close_all()
     return 0
 
 

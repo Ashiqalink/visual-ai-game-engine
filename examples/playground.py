@@ -39,7 +39,7 @@ except ImportError:
 import cv2
 import numpy as np
 
-from visual_ai import VisionPipeline
+from visual_ai import VisionPipeline, display
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 PANEL_W = 360
@@ -231,8 +231,8 @@ def main() -> int:
     parser.add_argument("--record", type=Path, metavar="FILE",
                         help="record payloads to this JSONL file from the start")
     parser.add_argument("--max-hands", type=int, default=2)
-    parser.add_argument("--width", type=int, default=960)
-    parser.add_argument("--height", type=int, default=540)
+    parser.add_argument("--width", type=int, default=1920)
+    parser.add_argument("--height", type=int, default=1080)
     args = parser.parse_args()
 
     ai_queue: queue.Queue = queue.Queue(maxsize=1)
@@ -276,8 +276,9 @@ def main() -> int:
             draw_overlay(canvas[:, PANEL_W:], payload)
             draw_panel(canvas[:, :PANEL_W], payload, fps, recorder)
 
-            cv2.imshow("visual_ai payload playground", canvas)
-            key = cv2.waitKey(1) & 0xFF
+            # `27` is also what closing the window reports, so the X button now
+            # stops the recorder cleanly instead of killing it mid-write.
+            key = display.show("visual_ai payload playground", canvas)
             if key in (27, ord("q")):
                 break
             elif key == ord("k"):
@@ -301,7 +302,7 @@ def main() -> int:
     finally:
         recorder.stop()
         pipeline.stop()
-        cv2.destroyAllWindows()
+        display.close_all()
     return 0
 
 

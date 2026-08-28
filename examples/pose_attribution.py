@@ -63,7 +63,7 @@ except ImportError:
 import cv2
 import numpy as np
 
-from visual_ai import VisionPipeline
+from visual_ai import VisionPipeline, display
 
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
@@ -493,8 +493,8 @@ def _i(p) -> tuple[int, int]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--camera", type=int, default=0)
-    ap.add_argument("--width", type=int, default=1280)
-    ap.add_argument("--height", type=int, default=720)
+    ap.add_argument("--width", type=int, default=1920)
+    ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--max-hands", type=int, default=4,
                     help="two players need four (default: 4)")
     ap.add_argument("--players", type=int, default=2)
@@ -575,8 +575,9 @@ def main() -> int:
             draw_attribution(frame, rows)
             draw_hud(frame, att, rows, pose_on, pose_every, fps, worker)
 
-            cv2.imshow("pose attribution", frame)
-            key = cv2.waitKey(1) & 0xFF
+            # `27` is also what closing the window reports, so the X button now
+            # stops the pose worker cleanly instead of killing it mid-inference.
+            key = display.show("pose attribution", frame)
             if key in (ord("q"), 27):
                 break
             if key == ord("p"):
@@ -602,7 +603,7 @@ def main() -> int:
             worker.stop()
         pipe.stop()
         att.close()
-        cv2.destroyAllWindows()
+        display.close_all()
     return 0
 
 

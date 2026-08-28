@@ -27,7 +27,11 @@ classifiers = [
     # closed-source package fails at the server instead of publishing it.
     "License :: Other/Proprietary License",
     "Private :: Do Not Upload",
-    "Operating System :: OS Independent",
+    # No "Operating System :: OS Independent". It was already untrue - the
+    # package ships a compiled engine_core - and visual_ai.display makes it
+    # untrue in the source as well: the d3d11 backend is Windows-only. The
+    # portable sdl backend covers every other platform, so the package still
+    # *runs* everywhere; a single build of it does not.
     "Topic :: Games/Entertainment",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -35,6 +39,11 @@ dependencies = [
     "numpy>=1.20.0",
     "opencv-python>=4.8.0",
     "mediapipe>=0.10.14,<=0.10.35",
+    # Hard, not optional. visual_ai.display is how a game gets on screen now,
+    # and its portable backend is SDL - so a "pygame is missing" degradation
+    # path would mean a game that starts, tracks, and shows nothing. 2.5 is the
+    # floor for set_mode(vsync=1).
+    "pygame>=2.5.0",
 ]
 
 [project.urls]

@@ -41,7 +41,7 @@ except ImportError:
 import cv2
 import numpy as np
 
-from visual_ai import VisionPipeline
+from visual_ai import VisionPipeline, display
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 TRAIL = 120                      # points kept per trail (~4 s at 30 fps)
@@ -64,8 +64,8 @@ def text(frame, s, pos, color=(235, 235, 235), scale=0.5, thick=1):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
-    parser.add_argument("--width", type=int, default=960)
-    parser.add_argument("--height", type=int, default=540)
+    parser.add_argument("--width", type=int, default=1920)
+    parser.add_argument("--height", type=int, default=1080)
     parser.add_argument("--min-cutoff", type=float, default=None,
                         help="starting min_cutoff in Hz (default: pipeline's)")
     parser.add_argument("--beta", type=float, default=None,
@@ -133,8 +133,9 @@ def main() -> int:
             text(frame, "1/2 min_cutoff  3/4 beta  K raw  R reset  D dump  Q quit",
                  (15, frame.shape[0] - 15), (150, 150, 150), 0.42)
 
-            cv2.imshow("visual_ai filter tuner", frame)
-            key = cv2.waitKey(1) & 0xFF
+            # `27` is also what closing the window reports, so the X button now
+            # exits through the summary print below instead of killing it.
+            key = display.show("visual_ai filter tuner", frame)
             if key in (27, ord("q")):
                 break
             elif key == ord("1"):
@@ -160,7 +161,7 @@ def main() -> int:
                       f"lag={lag_px:.1f}px")
     finally:
         pipeline.stop()
-        cv2.destroyAllWindows()
+        display.close_all()
     return 0
 
 
