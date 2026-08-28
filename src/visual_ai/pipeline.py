@@ -71,6 +71,15 @@ Queue payload (dict)
   # Person segmentation mask — ONLY when pipeline.emit_person_mask is True
   "person_mask" : ndarray | None,     # (H, W) uint8, 255 = person, 0 = background
 
+  # Full landmark set, per hand — populated ONLY when pipeline.emit_landmarks
+  # is True; an empty tuple otherwise, so indexing it is always safe.
+  "landmarks"  : tuple[(float, float, float), ...],  # 21 points, (x px, y px,
+                                      #   z px). Z is MediaPipe's relative
+                                      #   depth in the same units as x —
+                                      #   0 at the wrist, negative toward the
+                                      #   camera. It is not metres and is not
+                                      #   comparable between hands.
+
   "smoothing_enabled" : bool,         # One-Euro landmark smoothing currently on?
   "z_delta"           : float,        # raw Z push magnitude (debug)
   "xy_drift"          : float,        # lateral drift during a Z push (px)
@@ -538,6 +547,14 @@ class VisionPipeline(threading.Thread):
         # turning this on is the only thing that pays its download/init cost.
         self.emit_person_mask: bool = False
         self._person_segmenter = None
+
+        # ── Full landmark set (opt-in) ────────────────────────────────────────
+        # The 21 points per hand, in pixels, with MediaPipe's relative Z
+        # carried in the same units. Every existing consumer wants a fingertip
+        # and a sign, not a skeleton, so this is off by default — but a game
+        # that draws the hand into a 3D scene needs the whole hand and needs
+        # its depth, or the fingers cannot pass behind anything.
+        self.emit_landmarks: bool = False
 
         self.disable_camera: bool   = False
 
@@ -1535,6 +1552,12 @@ class VisionPipeline(threading.Thread):
         jitter_stats = self._jitter_slots[slot].update(
             (raw_ix, raw_iy), (gs.smooth_ix, gs.smooth_iy))
 
+        # MediaPipe scales Z like X, so the width converts all three the same
+        # way and a consumer gets one coherent space to draw in.
+        landmarks = tuple(
+            (p.x * W, p.y * H, p.z * W) for p in lm
+        ) if self.emit_landmarks else ()
+
         return {
             "hand_visible":        True,
             "index_pos":           index_pos,
@@ -1545,6 +1568,7 @@ class VisionPipeline(threading.Thread):
             # frame was discarded and consumers got a jittery anchor point.
             "pinch_pos":           pinch_pos,
             "pinch_pos_raw":       centroid_pos,
+            "landmarks":           landmarks,
             "is_pinching":         gs.pinch_active,
             "click_just_fired":    click_fired,
             "is_index_isolated":   is_isolated,
@@ -1910,6 +1934,7 @@ class VisionPipeline(threading.Thread):
             "middle_pos":        (0, 0),
             "pinch_pos":         (0, 0),
             "pinch_pos_raw":     (0, 0),
+            "landmarks":         (),
             "is_pinching":       False,
             "click_just_fired":  False,
             "is_index_isolated": False,
