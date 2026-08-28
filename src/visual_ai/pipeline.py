@@ -37,6 +37,11 @@ Queue payload (dict)
   # Hand signs (see classify_hand_sign)
   "hand_sign"         : str,          # "fist" | "open_palm" | "point" | "peace" | "unknown"
   "fingers_extended"  : (bool,) * 5,  # thumb, index, middle, ring, pinky
+  "finger_extension"  : (float,) * 5, # what those booleans were thresholded
+                                      #   from: tip reach past the PIP joint in
+                                      #   palm spans, signed. The thumb's is
+                                      #   abduction against a 0.10 threshold,
+                                      #   the other four are against 0.0.
   "is_fist"           : bool,
   "is_open_palm"      : bool,
   "grip_openness"     : float,        # 0.0 curled fist … 1.0 fingers straight
@@ -255,6 +260,38 @@ def classify_hand_sign(fingers_extended) -> str:
     return SIGN_UNKNOWN
 
 
+# ── Finger extension ──────────────────────────────────────────────────────────
+# A finger counts as extended when its tip reaches further from the wrist than
+# its own PIP joint. Tested as a bare `>`, that decision has no width: a finger
+# resting near the boundary flips on landmark noise alone, and `point` needs
+# *three* fingers to stay down at once, so one flickering finger is enough to
+# stop the sign ever surviving `_SIGN_DEBOUNCE` frames. That is the "pointing is
+# very hard to get right" report, and it got worse when hand tracking moved onto
+# the NPU by default — the accelerated landmarks are within 4.4 px median of
+# MediaPipe's but that is 4.4 px of extra wobble across a boundary with no
+# width. So the boundary gets one: past it by a palm-scaled margin to change,
+# and the previous answer inside it.
+#
+# The margins are fractions of the palm span (wrist to pinky MCP), so they mean
+# the same thing at any hand size or camera distance. An extended finger clears
+# its PIP by roughly half a palm span and a curled one falls about a third of
+# one short of it, so a band of ±0.08 is well inside the real signal while
+# being several times the landmark noise.
+_FINGER_EXT_MARGIN = 0.08
+#: The thumb is measured by abduction against a 0.10 threshold, not against
+#: zero, so it gets its own band around that.
+_THUMB_EXT_MARGIN = 0.05
+
+
+def _extended(delta: float, threshold: float, margin: float, previous: bool) -> bool:
+    """Threshold with hysteresis: inside the band, keep the previous answer."""
+    if delta > threshold + margin:
+        return True
+    if delta < threshold - margin:
+        return False
+    return previous
+
+
 def _dist2d(p1, p2) -> float:
     return math.dist(p1[:2], p2[:2])
 
@@ -304,6 +341,10 @@ class _GestureState:
         self.sign_candidate: str = SIGN_UNKNOWN  # sign awaiting confirmation
         self.sign_consec: int = 0                # frames the candidate has held
 
+        # Last frame's five extension booleans — what the hysteresis band in
+        # `_classify_fingers` holds on to while a finger sits on its boundary.
+        self.fingers_prev: tuple[bool, bool, bool, bool, bool] = (False,) * 5
+
         # Motion. Velocity is differenced from the *smoothed* fingertip so it is
         # usable directly; `raw_*` differences the unfiltered landmark so a
         # consumer can measure what the One-Euro filter actually costs in phase
@@ -333,6 +374,7 @@ class _GestureState:
         self.sign = SIGN_UNKNOWN
         self.sign_candidate = SIGN_UNKNOWN
         self.sign_consec = 0
+        self.fingers_prev = (False,) * 5
         self.prev_time = None
         self.prev_xy = None
         self.prev_raw_xy = None
@@ -1290,7 +1332,8 @@ class VisionPipeline(threading.Thread):
         """
         Finger extension, the debounced hand sign, and the continuous grip.
 
-        Returns ``(fingers_extended, is_isolated, hand_sign, grip_openness)``.
+        Returns ``(fingers_extended, is_isolated, hand_sign, grip_openness,
+        finger_extension)``.
 
         Extension and grip both want each fingertip's and each PIP joint's
         distance from the wrist, and used to measure them separately — sixteen
@@ -1319,11 +1362,23 @@ class VisionPipeline(threading.Thread):
         # resting thumb cannot flicker.
         pinky_mcp  = xyz(17)
         palm_span  = max(math.dist(wrist, pinky_mcp), 1e-6)
-        thumb_ext  = (math.dist(xyz(4), pinky_mcp)
-                      - math.dist(xyz(3), pinky_mcp)) > 0.10 * palm_span
+        was = gs.fingers_prev
+
+        # Every test below is a threshold with hysteresis; see `_extended`. The
+        # per-finger reach differences are kept as `finger_extension` — in palm
+        # spans, signed, positive meaning extended — because "which finger is
+        # the tracker unsure about" is not answerable from five booleans, and a
+        # sign that will not settle is exactly the question a player asks.
+        thumb_delta = (math.dist(xyz(4), pinky_mcp)
+                       - math.dist(xyz(3), pinky_mcp)) / palm_span
+        thumb_ext = _extended(thumb_delta, 0.10, _THUMB_EXT_MARGIN, was[0])
+        deltas = [(reach[tip] - reach[pip]) / palm_span for tip, pip in joints]
         index_ext, middle_ext, ring_ext, pinky_ext = (
-            reach[tip] > reach[pip] for tip, pip in joints)
+            _extended(delta, 0.0, _FINGER_EXT_MARGIN, previous)
+            for delta, previous in zip(deltas, was[1:]))
         fingers_extended = (thumb_ext, index_ext, middle_ext, ring_ext, pinky_ext)
+        gs.fingers_prev = fingers_extended
+        finger_extension = (round(thumb_delta, 4), *(round(d, 4) for d in deltas))
 
         # Relaxed index isolation: allow middle finger co-extension (natural tendon attachment),
         # requiring only ring and pinky to remain non-extended.
@@ -1355,7 +1410,8 @@ class VisionPipeline(threading.Thread):
             for tip, pip in joints
         ) / 4.0
 
-        return fingers_extended, is_isolated, hand_sign, grip_openness
+        return (fingers_extended, is_isolated, hand_sign, grip_openness,
+                finger_extension)
 
     def _depth_and_click(self, gs, index_pos: tuple, z_val: float) -> tuple:
         """
@@ -1463,8 +1519,8 @@ class VisionPipeline(threading.Thread):
         gs.was_3_pinching = is_3_pinching
         gs.pinch_active = is_3_pinching
 
-        fingers_extended, is_isolated, hand_sign, grip_openness = (
-            self._classify_fingers(lm, gs))
+        (fingers_extended, is_isolated, hand_sign, grip_openness,
+         finger_extension) = self._classify_fingers(lm, gs)
 
         # The Z-push click is evaluated after the depth section rather than
         # alongside the pinch above, because it wants the stabilized depth when
@@ -1495,6 +1551,7 @@ class VisionPipeline(threading.Thread):
             # Hand signs
             "hand_sign":           hand_sign,
             "fingers_extended":    fingers_extended,
+            "finger_extension":    finger_extension,
             "is_fist":             hand_sign == SIGN_FIST,
             "is_open_palm":        hand_sign == SIGN_OPEN_PALM,
             "grip_openness":       grip_openness,
@@ -1859,6 +1916,7 @@ class VisionPipeline(threading.Thread):
             # Hand signs
             "hand_sign":         SIGN_UNKNOWN,
             "fingers_extended":  (False, False, False, False, False),
+            "finger_extension":  (0.0, 0.0, 0.0, 0.0, 0.0),
             "is_fist":           False,
             "is_open_palm":      False,
             "grip_openness":     0.0,
