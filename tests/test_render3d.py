@@ -73,5 +73,43 @@ class TestRender3D(unittest.TestCase):
         self.assertAlmostEqual(elem.ry, 90.0, places=4)
 
 
+class TestTransformTriples(unittest.TestCase):
+    """
+    `position` / `rotation` / `scale` are the same nine numbers by another
+    name. They are here because sculptor assigned all three for as long as it
+    has existed and none of them existed: the assignments created attributes
+    the renderer never read, so the model sat at the origin and the hand moved
+    nothing. Nothing raised and nothing looked broken enough to chase.
+    """
+
+    def test_the_triples_write_through_to_the_components(self):
+        t = Transform3D()
+        t.position = (10.0, 20.0, 30.0)
+        t.rotation = (1.0, 2.0, 3.0)
+        t.scale = (2.0, 2.0, 2.0)
+        self.assertEqual((t.x, t.y, t.z), (10.0, 20.0, 30.0))
+        self.assertEqual((t.rx, t.ry, t.rz), (1.0, 2.0, 3.0))
+        self.assertEqual((t.sx, t.sy, t.sz), (2.0, 2.0, 2.0))
+
+    def test_the_triples_read_back_the_components(self):
+        t = Transform3D(x=1.0, y=2.0, z=3.0, rx=4.0, ry=5.0, rz=6.0,
+                        sx=7.0, sy=8.0, sz=9.0)
+        self.assertEqual(t.position, (1.0, 2.0, 3.0))
+        self.assertEqual(t.rotation, (4.0, 5.0, 6.0))
+        self.assertEqual(t.scale, (7.0, 8.0, 9.0))
+
+    def test_setting_the_triples_actually_moves_a_point(self):
+        """The failure was that it did not, so assert the transform, not the field."""
+        t = Transform3D()
+        t.position = (10.0, 20.0, 30.0)
+        moved = t.transform_points(np.array([[0.0, 0.0, 0.0]], dtype=np.float64))
+        np.testing.assert_allclose(moved[0], [10.0, 20.0, 30.0], atol=1e-6)
+
+    def test_a_misspelled_attribute_raises_instead_of_being_swallowed(self):
+        t = Transform3D()
+        with self.assertRaises(AttributeError):
+            t.postion = (1.0, 2.0, 3.0)
+
+
 if __name__ == "__main__":
     unittest.main()

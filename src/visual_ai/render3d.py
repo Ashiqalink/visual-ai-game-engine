@@ -11,9 +11,23 @@ import numpy as np
 from visual_ai.material import Material
 
 
-@dataclass
+@dataclass(slots=True)
 class Transform3D:
-    """3D Transformation representing position, rotation (degrees), and scale."""
+    """
+    3D Transformation representing position, rotation (degrees), and scale.
+
+    The nine components are the storage; `position`, `rotation` and `scale`
+    are the same three triples by name. Both spellings existed in callers
+    already — every consumer here passed components to the constructor, and
+    sculptor assigned the triples — but only the components were real, so
+    sculptor's turntable set three attributes that nothing read and its model
+    sat at the origin, unrotated and unscaled, for as long as the game has
+    existed.
+
+    ``slots=True`` is the half that keeps this fixed: an assignment to a name
+    that is not one of these now raises instead of quietly creating a field the
+    renderer will never look at.
+    """
     x: float = 0.0
     y: float = 0.0
     z: float = 0.0
@@ -23,6 +37,31 @@ class Transform3D:
     sx: float = 1.0
     sy: float = 1.0
     sz: float = 1.0
+
+    @property
+    def position(self) -> tuple[float, float, float]:
+        return (self.x, self.y, self.z)
+
+    @position.setter
+    def position(self, value) -> None:
+        self.x, self.y, self.z = (float(v) for v in value)
+
+    @property
+    def rotation(self) -> tuple[float, float, float]:
+        """Euler angles in degrees, in the order the matrix applies them."""
+        return (self.rx, self.ry, self.rz)
+
+    @rotation.setter
+    def rotation(self, value) -> None:
+        self.rx, self.ry, self.rz = (float(v) for v in value)
+
+    @property
+    def scale(self) -> tuple[float, float, float]:
+        return (self.sx, self.sy, self.sz)
+
+    @scale.setter
+    def scale(self, value) -> None:
+        self.sx, self.sy, self.sz = (float(v) for v in value)
 
     def get_rotation_matrix(self) -> np.ndarray:
         """Calculate 3x3 rotation matrix from Euler angles (in degrees)."""
@@ -470,6 +509,48 @@ class Renderer3D:
         """
         Project and render a 3D Mesh onto an OpenCV image canvas.
         """
+        self._paint(frame, self._collect_faces(mesh, transform, material,
+                                               wireframe, item=0))
+        return frame
+
+    def render_scene(self, frame: np.ndarray, items, wireframe: bool = False) -> np.ndarray:
+        """
+        Render several meshes with ONE depth sort across all of them.
+
+        ``items`` is an iterable of ``(mesh, transform, material)``.
+
+        Calling `render_mesh` twice cannot do this: each call sorts and paints
+        its own faces, so the second mesh lands entirely on top of the first
+        however far behind it is. Sorting the faces of every mesh together is
+        what lets one object pass through another — a hand whose fingers go
+        behind a cup while the thumb stays in front of it. The sort is still
+        the painter's algorithm, so two faces that actually intersect are
+        ordered by their average depth and one of them wins the whole overlap;
+        separate objects are what this is for.
+        """
+        faces = []
+        for index, (mesh, transform, material) in enumerate(items):
+            faces.extend(self._collect_faces(mesh, transform, material,
+                                             wireframe, item=index))
+        self._paint(frame, faces)
+        return frame
+
+    def _collect_faces(
+        self,
+        mesh: Mesh3D,
+        transform: Transform3D,
+        material: Material | None = None,
+        wireframe: bool = False,
+        item: int = 0,
+    ) -> list:
+        """
+        One mesh's visible faces, shaded and projected, ready for `_paint`.
+
+        Each entry is ``(depth, item, face number, screen points, colour,
+        opacity, wireframe)``. Shading is resolved here rather than at paint
+        time so a painted face carries no reference back to its mesh — which
+        is what lets `render_scene` interleave faces from several of them.
+        """
         if material is None:
             material = Material()
 
@@ -487,7 +568,7 @@ class Renderer3D:
         #    a time (Painter's algorithm). Everything here used to be a numpy
         #    call per face per frame.
         screen_int = screen_coords.astype(np.int32)
-        render_faces = []   # (average depth, face number, screen points, intensity)
+        render_faces = []   # see the docstring for the entry shape
 
         for vertex_idx, face_numbers in mesh.face_groups():
             on_screen = valid[vertex_idx].all(axis=1)
@@ -515,27 +596,31 @@ class Renderer3D:
 
             avg_depth = depths[vertex_idx].mean(axis=1)
             for i in range(len(vertex_idx)):
-                render_faces.append((avg_depth[i], face_numbers[i], pts[i],
-                                     1.0 if shades is None else shades[i]))
-
-        # Sort faces back to front (largest depth first); equal depths keep
-        # mesh order, which is what the old stable sort over faces gave.
-        render_faces.sort(key=lambda item: (-item[0], item[1]))
-
-        # 4. Render faces onto frame
-        frame_h, frame_w = frame.shape[:2]
-        for _, _, pts, intensity in render_faces:
-            if wireframe:
-                cv2.polylines(frame, [pts], isClosed=True, color=bgr, thickness=1,
-                              lineType=cv2.LINE_AA)
-            else:
-                shaded_bgr = (
+                intensity = 1.0 if shades is None else shades[i]
+                shaded_bgr = bgr if wireframe else (
                     int(min(255, bgr[0] * intensity)),
                     int(min(255, bgr[1] * intensity)),
                     int(min(255, bgr[2] * intensity)),
                 )
+                render_faces.append((avg_depth[i], item, face_numbers[i],
+                                     pts[i], shaded_bgr, material.opacity,
+                                     wireframe))
+        return render_faces
 
-                if material.opacity < 0.99:
+    def _paint(self, frame: np.ndarray, render_faces: list) -> np.ndarray:
+        """Draw collected faces back to front. See `_collect_faces`."""
+        # Sort faces back to front (largest depth first); equal depths keep
+        # mesh order, which is what the old stable sort over faces gave, and
+        # then the order the meshes were handed over in.
+        render_faces.sort(key=lambda face: (-face[0], face[1], face[2]))
+
+        frame_h, frame_w = frame.shape[:2]
+        for _, _, _, pts, shaded_bgr, opacity, wireframe in render_faces:
+            if wireframe:
+                cv2.polylines(frame, [pts], isClosed=True, color=shaded_bgr,
+                              thickness=1, lineType=cv2.LINE_AA)
+            else:
+                if opacity < 0.99:
                     min_x = max(0, int(pts[:, 0].min()))
                     max_x = min(frame_w, int(pts[:, 0].max()) + 1)
                     min_y = max(0, int(pts[:, 1].min()))
@@ -545,8 +630,8 @@ class Renderer3D:
                         roi = frame[min_y:max_y, min_x:max_x]
                         overlay = roi.copy()
                         cv2.fillPoly(overlay, [sub_pts], shaded_bgr, lineType=cv2.LINE_AA)
-                        cv2.addWeighted(overlay, material.opacity, roi,
-                                        1.0 - material.opacity, 0, roi)
+                        cv2.addWeighted(overlay, opacity, roi,
+                                        1.0 - opacity, 0, roi)
                 else:
                     cv2.fillPoly(frame, [pts], shaded_bgr, lineType=cv2.LINE_AA)
 
