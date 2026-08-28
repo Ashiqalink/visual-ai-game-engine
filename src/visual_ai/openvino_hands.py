@@ -28,6 +28,13 @@ does — `.multi_hand_landmarks[i].landmark[j].x/.y/.z` normalised the same way,
 `.multi_handedness[i].classification[0].label/.score` — so `pipeline.py` reads
 one or the other through identical code.
 
+It takes one argument MediaPipe's does not: an optional `face_box`. The palm
+network fires on faces, and a false hand costs more here than a missed one,
+because a rect held on a face is a tracking slot the player's second hand never
+gets — see `_FACE_GATE`. `pipeline.py` has already detected the face by the
+time it calls this, so it passes the box along; a caller that does not gets
+exactly the old behaviour.
+
 Two constants below were fitted rather than read. MediaPipe ships its graph as
 `hand_landmark_tracking_cpu.binarypb` with the subgraphs unexpanded (they are
 registered in C++), so the palm network's input range and the landmark->ROI
@@ -67,6 +74,27 @@ _LAND_SCALE, _LAND_SHIFT_Y = 1.8, -0.2
 #: Two ROIs this close are the same hand, so the detector's find is dropped
 #: rather than tracked twice. MediaPipe's AssociationNormRect threshold.
 _ASSOCIATION_IOU = 0.5
+
+#: A candidate whose landmarks sit on the detected face has to clear this
+#: instead of the ordinary gates. The palm network fires on a face often
+#: enough to matter, and a false hand costs far more here than a missed one:
+#: it holds a tracking rect, and `process` only re-runs the detector while
+#: fewer than `max_num_hands` rects are held — so one face permanently
+#: occupies the slot the player's second hand needed. `min_tracking_confidence`
+#: is 0.45 precisely so a real hand is not dropped, which is also low enough
+#: for a face to survive indefinitely.
+#:
+#: A hand held *over* the face is the case this must not break, and presence is
+#: what separates them: the landmark network reports a real hand in the crop
+#: near 1.0 whether or not there is a face behind it, while a crop containing
+#: only a face sits just over the loose gate. The strict gate applies only
+#: inside the face box, so nothing outside it changes.
+_FACE_GATE = 0.90
+
+#: The face box is grown by this much before the containment test. The box
+#: MediaPipe's FaceDetection returns is tight to the eyes and mouth, and the
+#: hand the palm network hallucinates from a face spans the whole head.
+_FACE_BOX_DILATE = 1.15
 
 
 class OpenVINOHandsUnavailable(RuntimeError):
@@ -129,6 +157,22 @@ def _iou(a: tuple[float, float, float, float], b) -> float:
     inter = inter_w * inter_h
     union = (ax1 - ax0) * (ay1 - ay0) + (bx1 - bx0) * (by1 - by0) - inter
     return inter / union if union > 0 else 0.0
+
+
+def _face_bounds(face_box) -> tuple[float, float, float, float] | None:
+    """`(x, y, w, h)` in pixels -> dilated `(x0, y0, x1, y1)`, or None."""
+    if not face_box:
+        return None
+    x, y, w, h = (float(v) for v in face_box)
+    if w <= 0.0 or h <= 0.0:
+        return None
+    grow_x = w * (_FACE_BOX_DILATE - 1.0) / 2.0
+    grow_y = h * (_FACE_BOX_DILATE - 1.0) / 2.0
+    return (x - grow_x, y - grow_y, x + w + grow_x, y + h + grow_y)
+
+
+def _inside(x: float, y: float, bounds) -> bool:
+    return bounds[0] <= x <= bounds[2] and bounds[1] <= y <= bounds[3]
 
 
 def _nms_weighted(detections: list[dict], threshold: float = 0.3) -> list[dict]:
@@ -267,6 +311,12 @@ class OpenVINOHands:
     than on the first frame.
     """
 
+    #: How `pipeline.py` knows it may hand `process()` a face box. Asked of the
+    #: object every frame rather than settled at construction, so a swapped-in
+    #: backend (a test double, MediaPipe's own) is never called with an
+    #: argument it does not take.
+    accepts_face_box = True
+
     def __init__(self, device: str = "NPU", max_num_hands: int = 2,
                  model_complexity: int = 1,
                  min_detection_confidence: float = 0.7,
@@ -279,6 +329,7 @@ class OpenVINOHands:
                  # four shots fired with cause 'lost' (none on CPU) because the
                  # hand vanished mid-pull. dGPU behavior at 0.45 is untested.
                  min_tracking_confidence: float = 0.45,
+                 face_gate: float = _FACE_GATE,
                  async_detector: bool = True):
         try:
             import openvino as ov
@@ -304,10 +355,15 @@ class OpenVINOHands:
         self.max_num_hands = max(1, int(max_num_hands))
         self.min_detection_confidence = float(min_detection_confidence)
         self.min_tracking_confidence = float(min_tracking_confidence)
+        self.face_gate = float(face_gate)
         self.async_detector = bool(async_detector)
         self._rects: list[tuple[float, float, float, float]] = []
         #: A detection in flight, as (input tensor, letterbox scale, left, top).
         self._pending: tuple | None = None
+        #: Candidates dropped by the face gate, cumulative. A player who cannot
+        #: get a second hand tracked needs to know whether their face is eating
+        #: the slot, and this is the only place that is visible.
+        self.face_rejects = 0
         #: Per-stage timings, so a HUD or bench can see where the frame went.
         self.timings = {"palm_ms": 0.0, "land_ms": 0.0, "detector_runs": 0, "frames": 0}
 
@@ -410,7 +466,7 @@ class OpenVINOHands:
         return {"pixels": pixels, "z": depth, "presence": presence,
                 "handedness": handedness}
 
-    def _adopt(self, detections: list[dict]) -> None:
+    def _adopt(self, detections: list[dict], face=None) -> None:
         """Turn fresh palm boxes into tracking rects, skipping hands already held."""
         for detection in detections:
             if len(self._rects) >= self.max_num_hands:
@@ -421,13 +477,29 @@ class OpenVINOHands:
             if any(_iou(bounds, _rect_bounds(known)) > _ASSOCIATION_IOU
                    for known in self._rects):
                 continue                          # already tracking this hand
+            # Never adopt a marginal detection that is sitting on the face: the
+            # rect it would take is the one the second hand needs, and holding
+            # it also stops the detector re-running to find that hand.
+            if (face is not None and detection["score"] < self.face_gate
+                    and _inside(rect[0], rect[1], face)):
+                self.face_rejects += 1
+                continue
             self._rects.append(rect)
 
     # ── public API ────────────────────────────────────────────────────────────
 
-    def process(self, rgb: np.ndarray):
-        """One frame in, a MediaPipe-shaped result out. `rgb` is HxWx3 uint8 RGB."""
+    def process(self, rgb: np.ndarray, face_box=None):
+        """
+        One frame in, a MediaPipe-shaped result out. `rgb` is HxWx3 uint8 RGB.
+
+        `face_box` is the frame's detected face as `(x, y, w, h)` in the same
+        pixels, or None. Given one, a candidate sitting on the face has to
+        clear `face_gate` rather than the ordinary confidences — see the
+        `_FACE_GATE` note. The argument is optional so the call site can stay
+        identical to MediaPipe's.
+        """
         height, width = rgb.shape[:2]
+        face = _face_bounds(face_box)
         self.timings["frames"] += 1
 
         # The detector is left in flight only while a hand is already being
@@ -442,11 +514,11 @@ class OpenVINOHands:
             detections = self._finish_palms(
                 block=not (self.async_detector and self._rects))
             if detections is not None:
-                self._adopt(detections)
+                self._adopt(detections, face)
         if self._pending is None and len(self._rects) < self.max_num_hands:
             self._start_palms(rgb)
             if not (self.async_detector and self._rects):
-                self._adopt(self._finish_palms(block=True))
+                self._adopt(self._finish_palms(block=True), face)
 
         surviving: list[tuple[float, float, float, float]] = []
         landmark_lists: list[_LandmarkList] = []
@@ -457,6 +529,14 @@ class OpenVINOHands:
             if hand["presence"] < self.min_tracking_confidence:
                 continue                          # tracking lost; detector re-runs
             pixels, depth = hand["pixels"], hand["z"]
+            # Dropping the rect rather than only hiding the hand is the point:
+            # a face kept as a rect is a slot the second hand never gets, and
+            # the detector does not re-run while the slot is held.
+            if (face is not None and hand["presence"] < self.face_gate
+                    and _inside(float(pixels[:, 0].mean()),
+                                float(pixels[:, 1].mean()), face)):
+                self.face_rejects += 1
+                continue
             landmark_lists.append(_LandmarkList([
                 _Landmark(float(x) / width, float(y) / height, float(z) / width)
                 for (x, y), z in zip(pixels, depth)

@@ -21,6 +21,9 @@ Queue payload (dict)
   "face_box"  : (int,)*4,# x, y, w, h in px; (0,0,0,0) when no face. Box width is
                          #   the RGB path's only distance proxy for the head.
   "face_count": int,     # detections found; only the first drives target_x/y
+  "face_hands_rejected"       : int,   # hand candidates dropped as being the
+                                       #   player's own face, this frame
+  "face_hands_rejected_total" : int,   # ...and over the session
   "frame"     : ndarray, # BGR camera frame (already flipped & resized)
 
   # Hand — these flat keys describe the PRIMARY hand (lowest occupied slot)
@@ -238,6 +241,71 @@ SIGN_UNKNOWN   = "unknown"
 # passes through ambiguous shapes while opening and closing, and without this a
 # grab-then-release would emit a burst of spurious signs in between.
 _SIGN_DEBOUNCE = 3
+
+# ── Face-as-hand rejection ────────────────────────────────────────────────────
+# The palm network fires on faces. Downstream that is not a cosmetic error: a
+# false hand takes a slot, and every backend stops looking for more hands once
+# it holds `max_hands` of them — so a face eats the slot the player's second
+# hand needed and the game simply never sees it. depthpong is where it was
+# found; anything with `max_hands=2` has it.
+#
+# The accelerated backend gates it at the source (see `_FACE_GATE` in
+# openvino_hands.py) because only there can the rect be dropped and the
+# detector re-run. This is the second net, and it is backend-agnostic: it
+# cannot free a slot inside MediaPipe's own tracker, but it does keep the face
+# from driving the game and it makes `hand_count` mean what it says.
+#
+# Two signals have to agree, because the case that must not break is a real
+# hand held *over* the face:
+#
+#   containment — a hand in front of a face is nearer the camera than the face
+#     is, so it images *larger* than the head and its landmarks spill out of
+#     the box. Landmarks that all fit inside a face-sized box are not a hand
+#     in front of that face.
+#   handedness  — both backends report which hand it is with a confidence, and
+#     a face is a coin flip. A real hand is rarely below 0.9.
+#
+#: Fraction of the 21 landmarks that must fall inside the dilated face box.
+_FACE_HAND_CONTAINED = 0.9
+#: The face box MediaPipe returns is tight to the eyes and mouth; the hand the
+#: palm network hallucinates out of a face spans the whole head.
+_FACE_BOX_DILATE = 1.15
+#: Above this handedness confidence the candidate is taken at its word.
+_FACE_HAND_HANDEDNESS = 0.9
+
+
+# ── Duplicate-hand rejection ──────────────────────────────────────────────────
+# The palm network can return two boxes for one hand, and nothing downstream
+# notices: `_assign_slots` matches on nearest wrist, so the copy takes the
+# second slot and the game gets two paddles out of one hand while the player's
+# real other hand is never looked for. Same slot-starvation as a face-as-hand,
+# different cause. depthpong is where it shows, for the same reason.
+#
+# The case that must survive is one hand overlapping the other, which is where
+# palm-centre separation alone is not enough: the centres genuinely coincide.
+# MediaPipe's landmark z cannot separate them -- it is zero at the wrist and
+# per-hand, so it is not comparable between two hands (see the `landmarks`
+# note in the payload spec above), and `multi_hand_world_landmarks` is
+# hand-centred for the same reason. Nor can depth_grid help here: without a
+# sensor that grid is synthesised *from* the hands this filter is deciding on.
+#
+# What is comparable across hands in one frame is apparent size. Two hands
+# cannot occupy the same space, so two that overlap are at different distances
+# and image at measurably different palm spans, while two boxes on one hand
+# come from the same landmark model on near-identical crops and agree to a few
+# percent. That is the depth signal, and it is free.
+#
+# So three tests, cheapest first, all in palm spans so they hold at arm's
+# length and up against the lens alike:
+#: 1. Palm centres nearer than this many palm spans -- a prefilter, so the
+#:    21-point comparison below only runs on candidates that could be a pair.
+_DUP_HAND_SPAN = 0.6
+#: 2. Apparent-size ratio. Above this the two are at different depths, which
+#:    is the overlapping-hands case, and neither is a copy of the other.
+_DUP_HAND_SCALE = 1.12
+#: 3. Mean per-landmark separation, in palm spans. A copy agrees across all 21
+#:    points; two hands that merely coincide differ in finger pose.
+_DUP_HAND_POSE = 0.35
 
 
 def classify_hand_sign(fingers_extended) -> str:
@@ -573,6 +641,18 @@ class VisionPipeline(threading.Thread):
         self._cached_face_detections = None
         self._cached_landmark_sets: list = []
         self._cached_handedness: list = []
+
+        # ── Face-as-hand rejection ────────────────────────────────────────────
+        # Candidates dropped as the face on the last detection frame, and over
+        # the session. Both travel on the payload: a player whose second hand
+        # will not track has no other way to find out that their face is what
+        # took the slot.
+        self.face_hand_filter = True
+        self._face_hands_rejected = 0
+        self.face_hands_rejected_total = 0
+        # Not a payload key: adding one is a queue-schema change. Read it off
+        # the pipeline object if a game wants to show it.
+        self.duplicate_hands_rejected_total = 0
 
         # ── MediaPipe: Face Detection ─────────────────────────────────────────
         # A whole second inference graph, measured at 3.1 ms/frame (15% of
@@ -1087,9 +1167,28 @@ class VisionPipeline(threading.Thread):
 
         if self._mp_hands is not None:
             if run_detection:
-                hand_results = self._mp_hands.process(rgb)
-                self._cached_landmark_sets = hand_results.multi_hand_landmarks or []
-                self._cached_handedness = getattr(hand_results, "multi_handedness", None) or []
+                gate = face_box if (face_visible and self.face_hand_filter) else None
+                before = getattr(self._mp_hands, "face_rejects", 0)
+                # Only the accelerated backend takes a face box; MediaPipe's own
+                # `process()` has no such argument, and neither does a test
+                # double — so the backend is asked rather than assumed.
+                if getattr(self._mp_hands, "accepts_face_box", False):
+                    hand_results = self._mp_hands.process(rgb, gate)
+                else:
+                    hand_results = self._mp_hands.process(rgb)
+                sets = list(hand_results.multi_hand_landmarks or [])
+                scores = list(getattr(hand_results, "multi_handedness", None) or [])
+                # What the backend threw out at the source, plus what it did not.
+                rejected = getattr(self._mp_hands, "face_rejects", 0) - before
+                if gate is not None:
+                    sets, scores, dropped = self._drop_face_hands(sets, scores, gate)
+                    rejected += dropped
+                sets, scores, duplicates = self._drop_duplicate_hands(sets, scores)
+                self.duplicate_hands_rejected_total += duplicates
+                self._cached_landmark_sets = sets
+                self._cached_handedness = scores
+                self._face_hands_rejected = rejected
+                self.face_hands_rejected_total += rejected
             landmark_sets = self._cached_landmark_sets
             handedness = self._cached_handedness
 
@@ -1145,6 +1244,10 @@ class VisionPipeline(threading.Thread):
             "face_visible": face_visible,
             "face_box": face_box,
             "face_count": face_count,
+            # Hand candidates dropped as the player's own face, this frame and
+            # over the session. See the _FACE_HAND_* notes.
+            "face_hands_rejected": self._face_hands_rejected,
+            "face_hands_rejected_total": self.face_hands_rejected_total,
             "frame":    bgr_frame,
             "scene_luma":     self.scene_luma,
             "low_light_gain": self.low_light_gain,
@@ -1168,6 +1271,99 @@ class VisionPipeline(threading.Thread):
             payload["person_mask"] = self._get_person_mask(bgr_frame)
 
         return payload
+
+    # ── Face-as-hand rejection ────────────────────────────────────────────────
+    def _drop_face_hands(self, landmark_sets, handedness, face_box):
+        """
+        Drop the candidates that are the player's face, not a hand.
+
+        Returns ``(landmark_sets, handedness, dropped)`` with the two lists
+        still parallel — `_process_frame` indexes handedness by the landmark
+        set's position, so filtering one without the other would hand slot 0
+        the other hand's label.
+
+        Both tests have to agree before anything is dropped; see the
+        `_FACE_HAND_*` constants for why each one is here and what the case is
+        that must survive (a real hand held over the face).
+        """
+        x, y, w, h = (float(v) for v in face_box)
+        if w <= 0.0 or h <= 0.0:
+            return landmark_sets, handedness, 0
+
+        grow_x = w * (_FACE_BOX_DILATE - 1.0) / 2.0
+        grow_y = h * (_FACE_BOX_DILATE - 1.0) / 2.0
+        x0, y0 = x - grow_x, y - grow_y
+        x1, y1 = x + w + grow_x, y + h + grow_y
+
+        kept_sets, kept_scores, dropped = [], [], 0
+        for i, lm_set in enumerate(landmark_sets):
+            score = 1.0
+            if i < len(handedness):
+                try:
+                    score = float(handedness[i].classification[0].score)
+                except (AttributeError, IndexError):
+                    score = 1.0
+
+            points = lm_set.landmark
+            inside = sum(
+                1 for p in points
+                if x0 <= p.x * self.width <= x1 and y0 <= p.y * self.height <= y1
+            )
+            is_face = (score < _FACE_HAND_HANDEDNESS
+                       and inside >= _FACE_HAND_CONTAINED * len(points))
+            if is_face:
+                dropped += 1
+                continue
+            kept_sets.append(lm_set)
+            # A placeholder rather than a skip: the lists are positional, so
+            # leaving a gap here would give the next hand this one's label.
+            # `_process_frame` already tolerates an entry it cannot read.
+            kept_scores.append(handedness[i] if i < len(handedness) else None)
+        return kept_sets, kept_scores, dropped
+
+    def _drop_duplicate_hands(self, landmark_sets, handedness):
+        """
+        Drop the second copy of a hand the palm network found twice.
+
+        Returns ``(landmark_sets, handedness, dropped)``, the two lists still
+        parallel for the same reason as in `_drop_face_hands`. See the
+        `_DUP_HAND_SPAN` note for why the test is written in palm spans.
+        """
+        if len(landmark_sets) < 2:
+            return landmark_sets, handedness, 0
+
+        def measure(lm_set):
+            pts = [(p.x * self.width, p.y * self.height) for p in lm_set.landmark]
+            centre = ((pts[0][0] + pts[5][0] + pts[17][0]) / 3.0,
+                      (pts[0][1] + pts[5][1] + pts[17][1]) / 3.0)
+            # Wrist to middle-finger MCP: the one length that scales with the
+            # hand and not with which fingers happen to be extended.
+            return pts, centre, _dist2d(pts[0], pts[9])
+
+        def is_copy(a, b):
+            (pts_a, centre_a, span_a), (pts_b, centre_b, span_b) = a, b
+            near = min(span_a, span_b)
+            if _dist2d(centre_a, centre_b) >= _DUP_HAND_SPAN * near:
+                return False
+            if max(span_a, span_b) > _DUP_HAND_SCALE * near:
+                return False           # different apparent size — different depth
+            mean_sep = sum(_dist2d(p, q) for p, q in zip(pts_a, pts_b)) / len(pts_a)
+            return mean_sep < _DUP_HAND_POSE * near
+
+        kept_sets, kept_scores, kept, dropped = [], [], [], 0
+        for i, lm_set in enumerate(landmark_sets):
+            measured = measure(lm_set)
+            # A degenerate span cannot be measured against, so such a set is
+            # kept rather than guessed about.
+            if measured[2] > 0.0 and any(
+                is_copy(measured, other) for other in kept if other[2] > 0.0
+            ):
+                dropped += 1
+                continue
+            kept_sets.append(lm_set)
+            kept_scores.append(handedness[i] if i < len(handedness) else None)
+            kept.append(measured)
+        return kept_sets, kept_scores, dropped
 
     # ── Hand → slot assignment ────────────────────────────────────────────────
     def _assign_slots(self, landmark_sets) -> dict[int, int]:
@@ -1983,6 +2179,8 @@ class VisionPipeline(threading.Thread):
             "face_visible": False,
             "face_box":     (0, 0, 0, 0),
             "face_count":   0,
+            "face_hands_rejected":       0,
+            "face_hands_rejected_total": self.face_hands_rejected_total,
             "frame":    frame,
             "scene_luma":     self.scene_luma,
             "low_light_gain": self.low_light_gain,
