@@ -16,7 +16,7 @@ import unittest
 
 import numpy as np
 
-from visual_ai.render3d import Camera3D, Material, Mesh3D, Renderer3D, Transform3D
+from visual_ai.three_d import Camera3D, Material, Mesh3D, Renderer3D, Transform3D
 
 WIDTH, HEIGHT = 800, 600
 CENTRE = (HEIGHT // 2, WIDTH // 2)          # (row, col)

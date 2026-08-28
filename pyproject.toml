@@ -70,4 +70,4 @@ select = ["E", "F", "I", "UP"]
 "src/visual_ai/__init__.py" = ["E402"]
 # Inserts its sys.path before importing the package, the same way the games'
 # engine_bootstrap does.
-"tests/test_3d_character_options.py" = ["E402"]
+"tests/three_d/test_3d_character_options.py" = ["E402"]

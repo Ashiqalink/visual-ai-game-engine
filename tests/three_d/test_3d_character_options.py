@@ -13,7 +13,7 @@ import numpy as np
 # also sits at <root>/visual_ai, and putting the root first on sys.path makes
 # that copy shadow src/visual_ai for every module imported afterwards — which
 # silently ran the whole test suite against outdated code.
-src_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src'))
+src_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
 if src_root not in sys.path:
     sys.path.insert(0, src_root)
 

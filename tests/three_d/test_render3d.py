@@ -4,7 +4,7 @@ import numpy as np
 
 from visual_ai.fallback_engine import PythonFallbackEngine
 from visual_ai.material import Material
-from visual_ai.render3d import Camera3D, Mesh3D, Renderer3D, Transform3D
+from visual_ai.three_d import Camera3D, Mesh3D, Renderer3D, Transform3D
 
 
 class TestRender3D(unittest.TestCase):
