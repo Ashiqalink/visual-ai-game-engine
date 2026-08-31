@@ -7,12 +7,26 @@ different things (measured on a Core Ultra 5 225H / Arc 130T / AI Boost NPU,
 
     hand tracking, end to end   MediaPipe CPU 19.4 ms   iGPU 2.0 ms   NPU 3.4 ms
     CPU cost of the same        1.0 core                2.3 cores     1.4 cores
+    face detection, end to end  MediaPipe CPU  5.7 ms   iGPU 1.4 ms   NPU 2.1 ms
+    CPU cost of the same        1.0 core                1.2 cores     0.25 core
     MODNet matting 640x352      ORT CPU     48.4 ms     iGPU 11.9 ms  NPU 42.7 ms
 
-So the default policy is hands on the NPU — nearly iGPU speed, a third of the
-CPU, and it leaves the iGPU free for the game's own drawing — and matting and
-segmentation on the iGPU, which is 4x the CPU there and where the NPU's FP16
-weights cost real accuracy on an alpha matte.
+So the default policy is hands *and* faces on the NPU — nearly iGPU speed, a
+fraction of the CPU, and it leaves the iGPU free for the game's own drawing —
+and matting and segmentation on the iGPU, which is 4x the CPU there.
+
+Faces go to the NPU rather than the iGPU, which wins the row above, because
+the row is one network running alone and neither of them ever does. Added to
+a frame whose hands are already on the NPU (720p fixture, 60 frames,
+2026-08-31), face detection costs +0.50 ms on the NPU, +1.52 ms on the iGPU
+and +9.59 ms on MediaPipe's CPU graph. The NPU is a serial queue, but these
+two networks are small enough that sharing it still beats crossing devices.
+
+Matting stays on the iGPU for speed, not accuracy. Measured against the CPU's
+f32 matte (640x352, 2026-08-31), the NPU's FP16 is the *closer* of the two
+accelerators — MAE 2e-5 and max 0.019, against the iGPU's 3e-5 and 0.048 —
+and simply half its speed. An earlier note here blamed FP16 for an accuracy
+cost on the alpha matte; that was wrong.
 
 That policy is the default: with nothing asked for, the preset is "auto". It
 costs nothing to try — `resolve` returns None when the preference is "off", when
@@ -29,16 +43,17 @@ import os
 ENV_ACCEL = "VISUAL_AI_ACCEL"
 ENV_HAND_DEVICE = "VISUAL_AI_HAND_DEVICE"
 ENV_MATTE_DEVICE = "VISUAL_AI_MATTE_DEVICE"
+ENV_FACE_DEVICE = "VISUAL_AI_FACE_DEVICE"
 
 #: What each ``--accel`` preset means for each consumer, in preference order.
 #: "auto" is the measured policy above; the single-device presets are escape
 #: hatches for benchmarking one part of the machine against another.
 _PRESETS: dict[str, dict[str, tuple[str, ...]]] = {
-    "off":  {"hand": (), "matte": ()},
-    "auto": {"hand": ("NPU", "GPU"), "matte": ("GPU",)},
-    "npu":  {"hand": ("NPU",), "matte": ("NPU",)},
-    "gpu":  {"hand": ("GPU",), "matte": ("GPU",)},
-    "cpu":  {"hand": ("CPU",), "matte": ("CPU",)},
+    "off":  {"hand": (), "matte": (), "face": ()},
+    "auto": {"hand": ("NPU", "GPU"), "matte": ("GPU",), "face": ("NPU", "GPU")},
+    "npu":  {"hand": ("NPU",), "matte": ("NPU",), "face": ("NPU",)},
+    "gpu":  {"hand": ("GPU",), "matte": ("GPU",), "face": ("GPU",)},
+    "cpu":  {"hand": ("CPU",), "matte": ("CPU",), "face": ("CPU",)},
 }
 
 PRESETS = tuple(_PRESETS)
@@ -99,7 +114,7 @@ def preset(explicit: str | None = None) -> str:
 def resolve(consumer: str, explicit: str | None = None,
             accel: str | None = None) -> str | None:
     """
-    The OpenVINO device for ``consumer`` ("hand" or "matte"), or None for
+    The OpenVINO device for ``consumer`` ("hand", "face" or "matte"), or None for
     "stay on the existing CPU path".
 
     `explicit` (a device id, or the matching ``VISUAL_AI_*_DEVICE`` variable)
@@ -108,7 +123,8 @@ def resolve(consumer: str, explicit: str | None = None,
     an NPU on a machine without one is a fallback, not an error, but it must be
     a *visible* fallback — see `describe`.
     """
-    env_key = {"hand": ENV_HAND_DEVICE, "matte": ENV_MATTE_DEVICE}.get(consumer)
+    env_key = {"hand": ENV_HAND_DEVICE, "matte": ENV_MATTE_DEVICE,
+               "face": ENV_FACE_DEVICE}.get(consumer)
     wanted = (explicit or (os.environ.get(env_key) if env_key else None) or "").strip().upper()
     if wanted in ("", "AUTO"):
         candidates = _PRESETS[preset(accel)].get(consumer, ())
@@ -141,7 +157,8 @@ def describe(consumer: str, resolved: str | None, fallback: str) -> str:
     # excludes OpenVINO on purpose. This suffix is for a request that lost, and
     # nobody requested the default.
     device_key = {"hand": ENV_HAND_DEVICE,
-                  "matte": ENV_MATTE_DEVICE}.get(consumer, "")
+                  "matte": ENV_MATTE_DEVICE,
+                  "face": ENV_FACE_DEVICE}.get(consumer, "")
     asked = os.environ.get(device_key, "").strip().lower()
     if not asked:
         asked = os.environ.get(ENV_ACCEL, "").strip().lower()

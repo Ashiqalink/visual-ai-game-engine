@@ -28,7 +28,7 @@ class _Devices:
         accel.available_devices = lambda: list(self.devices)
         self._env = {key: os.environ.pop(key, None)
                      for key in (accel.ENV_ACCEL, accel.ENV_HAND_DEVICE,
-                                 accel.ENV_MATTE_DEVICE)}
+                                 accel.ENV_MATTE_DEVICE, accel.ENV_FACE_DEVICE)}
         return self
 
     def __exit__(self, *exc):
@@ -48,6 +48,31 @@ class TestResolve(unittest.TestCase):
         with _Devices("CPU", "GPU", "NPU"):
             self.assertEqual(accel.resolve("hand"), "NPU")
             self.assertEqual(accel.resolve("matte"), "GPU")
+            self.assertEqual(accel.resolve("face"), "NPU")
+
+    def test_faces_follow_the_hands_onto_the_npu(self):
+        # Not because the NPU is the faster device for BlazeFace alone - the
+        # iGPU is - but because the hands are already there and the pair costs
+        # less on one device than split across two. See accel.py.
+        with _Devices("CPU", "GPU", "NPU"):
+            self.assertEqual(accel.resolve("face"), accel.resolve("hand"))
+
+    def test_faces_fall_back_to_the_igpu_then_to_mediapipe(self):
+        with _Devices("CPU", "GPU"):
+            self.assertEqual(accel.resolve("face"), "GPU")
+        with _Devices("CPU"):
+            self.assertIsNone(accel.resolve("face"))
+
+    def test_a_face_device_can_be_pinned_without_moving_the_hands(self):
+        # The escape hatch the split above needs: one consumer at a time.
+        with _Devices("CPU", "GPU", "NPU"):
+            self.assertEqual(accel.resolve("face", explicit="GPU"), "GPU")
+            self.assertEqual(accel.resolve("hand"), "NPU")
+
+    def test_the_environment_carries_a_face_device_into_a_child_process(self):
+        with _Devices("CPU", "GPU", "NPU"):
+            os.environ[accel.ENV_FACE_DEVICE] = "gpu"
+            self.assertEqual(accel.resolve("face"), "GPU")
 
     def test_the_default_is_still_the_cpu_path_on_a_machine_without_devices(self):
         # The whole safety argument for defaulting to "auto": every way it can

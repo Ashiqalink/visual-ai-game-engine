@@ -2,7 +2,8 @@
 pipeline.py — VisionPipeline: background webcam thread for the Visual AI Game Engine.
 
 Detects BOTH:
-  • Face coordinates  (MediaPipe FaceDetection or fallback centre)
+  • Face coordinates  (BlazeFace on an accelerator, MediaPipe FaceDetection
+                       otherwise, or the frame centre when neither found one)
   • Hand gestures     (MediaPipe Hands)
       – index-fingertip position       → index_pos
       – 3-finger pinch (thumb+index+middle within a centroid radius)
@@ -113,6 +114,11 @@ Queue payload (dict)
                                      # that fell back to CPU is otherwise
                                      # indistinguishable in play from one that
                                      # is working, just slower.
+  "face_device"          : str,      # the same, for face detection. "" when
+                                     # the game asked for detect_face=False,
+                                     # so a HUD can leave the line out rather
+                                     # than name a device for a graph that is
+                                     # not running.
   "stabilizer_state"     : str,       # "inactive" | "sampling" | "active"
   "stabilizer_progress"  : float,
   "stabilizer_noise_amp" : float,     # measured vibration std-dev (m)
@@ -146,11 +152,12 @@ import queue
 import threading
 import time
 import warnings
+from collections import namedtuple
 
 import cv2
 import numpy as np
 
-from visual_ai import accel, devicelog, openvino_hands
+from visual_ai import accel, devicelog, openvino_hands, openvino_zoo
 from visual_ai.depth_source import DepthStream, open_depth_source
 from visual_ai.depth_stabilizer import DepthStabilizer
 from visual_ai.gesture_math import get_landmark_velocity
@@ -272,6 +279,16 @@ _FACE_HAND_CONTAINED = 0.9
 _FACE_BOX_DILATE = 1.15
 #: Above this handedness confidence the candidate is taken at its word.
 _FACE_HAND_HANDEDNESS = 0.9
+
+#: One face, normalised to the frame — what both face backends are reduced to.
+#: The field names are MediaPipe's `relative_bounding_box`, because that is the
+#: shape the reading code was written against.
+_FaceBox = namedtuple("_FaceBox", "xmin ymin width height")
+
+#: How many faces the accelerated backend is asked for. MediaPipe's graph has
+#: no cap and `face_count` rides on the payload, so this is not free headroom
+#: to cut to one — a game counting people in frame would start seeing fewer.
+_MAX_FACES = 4
 
 
 # ── Duplicate-hand rejection ──────────────────────────────────────────────────
@@ -538,6 +555,7 @@ class VisionPipeline(threading.Thread):
         low_light_boost: bool = True,
         depth_source: str | None = None,
         hand_device: str | None = None,
+        face_device: str | None = None,
     ):
         super().__init__(daemon=True)
         self.result_queue  = result_queue
@@ -654,7 +672,7 @@ class VisionPipeline(threading.Thread):
         # the pipeline object if a game wants to show it.
         self.duplicate_hands_rejected_total = 0
 
-        # ── MediaPipe: Face Detection ─────────────────────────────────────────
+        # ── Face detection ────────────────────────────────────────────────────
         # A whole second inference graph, measured at 3.1 ms/frame (15% of
         # _process_frame) at 1280x720. It is opt-*out* rather than opt-in
         # because the face keys have been on every payload since the pipeline
@@ -662,15 +680,57 @@ class VisionPipeline(threading.Thread):
         # the default would break those silently, one KeyError-free frame of
         # wrong behaviour at a time. Hand-only games pass detect_face=False and
         # stop paying for a detection nothing consumes.
+        #
+        # BlazeFace through OpenVINO first, the way hands do below. It is the
+        # same network MediaPipe's FaceDetection runs, so this is a change of
+        # device and not of model, and on a frame whose hands are already on
+        # the NPU it costs 0.50 ms where MediaPipe's graph costs 9.59 (the
+        # measurements are in accel.py).
+        #
+        # The boxes are not MediaPipe's to the pixel: on the 720p fixture the
+        # OpenVINO decode sits ~4 px left of MediaPipe's and ~6 px above it,
+        # and is 1% smaller. That is the letterbox and NMS convention rather
+        # than the device — NPU against OpenVINO's own CPU plugin is IoU
+        # 0.994 — but it does move `face_box` and `target_x/y` by a few pixels
+        # for every game that reads them.
         self.detect_face = bool(detect_face)
+        self._face_net = None
         self._mp_face = None
-        if self.detect_face and HAS_MEDIAPIPE and mp_face_detection_module is not None:
+        resolved_face_device = (accel.resolve("face", explicit=face_device)
+                                if self.detect_face else None)
+        if resolved_face_device:
+            try:
+                net = openvino_zoo.FaceDetector(resolved_face_device,
+                                                max_faces=_MAX_FACES)
+            except Exception as e:
+                print(f"[VisionPipeline] FaceDetector on {resolved_face_device} "
+                      f"unavailable: {e}")
+                net = None
+            # The zoo answers a device that refuses the model with its own CPU
+            # plugin. That is not the fallback wanted here — it is four cores
+            # of inference against MediaPipe's one — so keep the accelerated
+            # path only when the device asked for is the device that answered.
+            if net is not None and net.device != resolved_face_device:
+                print(f"[VisionPipeline] {resolved_face_device} refused BlazeFace "
+                      f"({net.device_name}); using MediaPipe")
+                net.close()
+                net = None
+            self._face_net = net
+            if net is None:
+                resolved_face_device = None
+        if (self.detect_face and self._face_net is None
+                and HAS_MEDIAPIPE and mp_face_detection_module is not None):
             try:
                 self._mp_face = mp_face_detection_module.FaceDetection(
                     model_selection=0, min_detection_confidence=0.5
                 )
             except Exception as e:
                 print(f"[VisionPipeline] FaceDetection init warning: {e}")
+        # Empty rather than "CPU (MediaPipe)" for a game that turned the graph
+        # off: nothing is detecting faces, and a HUD should say nothing at all.
+        self.face_device_name = (
+            accel.describe("face", resolved_face_device, "CPU (MediaPipe)")
+            if self.detect_face else "")
 
         # ── MediaPipe: Hands ──────────────────────────────────────────────────
         self._mp_hands = None
@@ -727,6 +787,7 @@ class VisionPipeline(threading.Thread):
         self.device_log.session(
             hand_device=self.hand_device_name,
             hand_backend=type(self._mp_hands).__name__ if self._mp_hands else "none",
+            face_device=self.face_device_name,
             accel_preset=accel.preset(),
             devices=accel.available_devices(),
             model_complexity=self.model_complexity,
@@ -767,7 +828,8 @@ class VisionPipeline(threading.Thread):
             "camera_available": self.camera_available,
             "disable_camera": getattr(self, "disable_camera", False),
             "has_mediapipe": HAS_MEDIAPIPE,
-            "face_tracking": self._mp_face is not None,
+            "face_tracking": self._face_net is not None or self._mp_face is not None,
+            "face_device": self.face_device_name,
             "hand_tracking": self._mp_hands is not None,
             "hand_device": self.hand_device_name,
             "device_log": self.device_log.status(),
@@ -1106,6 +1168,27 @@ class VisionPipeline(threading.Thread):
             self.join(timeout=join_timeout)
 
     # ── Frame processing ──────────────────────────────────────────────────────
+    def _face_boxes(self, rgb: np.ndarray) -> list:
+        """
+        Faces in `rgb` as :class:`_FaceBox` values, best score first.
+
+        The two backends do not agree on units: MediaPipe reports a box already
+        normalised to the frame, while the OpenVINO wrapper reports pixels of
+        the frame it was handed. They are reconciled here, once, rather than at
+        each place downstream that reads a face.
+        """
+        if self._face_net is not None:
+            height, width = rgb.shape[:2]
+            return [_FaceBox(d.box[0] / width, d.box[1] / height,
+                             (d.box[2] - d.box[0]) / width,
+                             (d.box[3] - d.box[1]) / height)
+                    for d in self._face_net.detect(rgb)]
+        if self._mp_face is None:
+            return []
+        found = self._mp_face.process(rgb).detections
+        return [_FaceBox(b.xmin, b.ymin, b.width, b.height)
+                for b in (d.location_data.relative_bounding_box for d in (found or ()))]
+
     def _process_frame(self, bgr_frame: np.ndarray) -> dict:
         """Run face + hand detection on one BGR frame. Returns full payload."""
         run_detection = (self._detection_frame_count % self.detection_stride == 0)
@@ -1141,14 +1224,13 @@ class VisionPipeline(threading.Thread):
         face_box = (0, 0, 0, 0)
         face_count = 0
 
-        if self._mp_face is not None:
+        if self._face_net is not None or self._mp_face is not None:
             if run_detection:
-                self._cached_face_detections = self._mp_face.process(rgb).detections
+                self._cached_face_detections = self._face_boxes(rgb)
             detections = self._cached_face_detections
             if detections:
                 face_count = len(detections)
-                det  = detections[0]
-                bbox = det.location_data.relative_bounding_box
+                bbox = detections[0]
                 target_x = (bbox.xmin + bbox.width  / 2.0) * self.width
                 target_y = (bbox.ymin + bbox.height / 2.0) * self.height
                 # Box width is the only cheap proxy the RGB path has for how far
@@ -1254,6 +1336,7 @@ class VisionPipeline(threading.Thread):
             "depth_device":   self.depth_device_name if self.depth_stream else "",
             "depth_fps":      self.depth_fps,
             "hand_device":    self.hand_device_name,
+            "face_device":    self.face_device_name,
             # Hand (merged in from the primary hand's gesture dict)
             **gesture,
             # Every tracked hand, slot-ordered, plus handedness shortcuts.
@@ -2187,6 +2270,7 @@ class VisionPipeline(threading.Thread):
             "depth_device":   self.depth_device_name if self.depth_stream else "",
             "depth_fps":      self.depth_fps,
             "hand_device":    self.hand_device_name,
+            "face_device":    self.face_device_name,
             **self._empty_gesture(),
             "hands":      (),
             "hand_count": 0,

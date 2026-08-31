@@ -109,6 +109,19 @@ class _FakeFace:
         return type("R", (), {"detections": [_Detection(self.box)]})()
 
 
+def _use_fake_face(pipeline, face=True):
+    """Put the fixture face in front of `pipeline`, whatever it built.
+
+    Replacing `_mp_face` alone is not enough: the pipeline prefers the OpenVINO
+    face network when a device took one, which on a machine with an NPU it did,
+    and the fixture face would then be quietly ignored in favour of whatever
+    BlazeFace makes of a synthetic frame.
+    """
+    pipeline._face_net = None
+    pipeline._mp_face = _FakeFace() if face else None
+    return pipeline
+
+
 WIDTH, HEIGHT = 800, 600
 #: The face _FakeFace reports, in pixels: x 320..480, y 180..330.
 FACE_PX = (320, 180, 160, 150)
@@ -174,8 +187,7 @@ class TestTheFilterIsWiredUp(unittest.TestCase):
         p.stop()
 
     def test_the_face_fixture_lands_where_the_pixels_say(self):
-        p = _pipeline()
-        p._mp_face = _FakeFace()
+        p = _use_fake_face(_pipeline())
         p._mp_hands = _FakeHands(_HandResults([]))
         payload = p._process_frame(_frame())
         self.assertEqual(payload["face_box"], FACE_PX)
@@ -185,8 +197,7 @@ class TestTheFilterIsWiredUp(unittest.TestCase):
 class TestPipelineFilter(unittest.TestCase):
 
     def _run(self, sets, handedness, face=True, **kwargs):
-        p = _pipeline(max_hands=2, **kwargs)
-        p._mp_face = _FakeFace() if face else None
+        p = _use_fake_face(_pipeline(max_hands=2, **kwargs), face)
         p._mp_hands = _FakeHands(_HandResults(sets, handedness))
         return p, p._process_frame(_frame())
 
@@ -225,8 +236,7 @@ class TestPipelineFilter(unittest.TestCase):
         p.stop()
 
     def test_the_filter_can_be_switched_off(self):
-        p = _pipeline(max_hands=2)
-        p._mp_face = _FakeFace()
+        p = _use_fake_face(_pipeline(max_hands=2))
         p.face_hand_filter = False
         p._mp_hands = _FakeHands(_HandResults(
             [_face_sized_hand(), _hand_at_the_side()],
@@ -246,8 +256,7 @@ class TestPipelineFilter(unittest.TestCase):
         p.stop()
 
     def test_the_session_total_accumulates(self):
-        p = _pipeline(max_hands=2)
-        p._mp_face = _FakeFace()
+        p = _use_fake_face(_pipeline(max_hands=2))
         p._mp_hands = _FakeHands(_HandResults([_face_sized_hand()],
                                               [_Handedness("Right", 0.55)]))
         for _ in range(3):
@@ -263,8 +272,7 @@ class TestPipelineFilter(unittest.TestCase):
 class TestAcceleratedBackendHandover(unittest.TestCase):
 
     def test_the_face_box_is_handed_to_a_backend_that_takes_one(self):
-        p = _pipeline(max_hands=2)
-        p._mp_face = _FakeFace()
+        p = _use_fake_face(_pipeline(max_hands=2))
         p._mp_hands = _AcceleratedFakeHands(_HandResults([_hand_at_the_side()]),
                                             rejects_per_call=2)
         payload = p._process_frame(_frame())
@@ -275,8 +283,7 @@ class TestAcceleratedBackendHandover(unittest.TestCase):
         p.stop()
 
     def test_a_backend_that_takes_no_face_box_is_not_handed_one(self):
-        p = _pipeline(max_hands=2)
-        p._mp_face = _FakeFace()
+        p = _use_fake_face(_pipeline(max_hands=2))
         p._mp_hands = _FakeHands(_HandResults([_hand_at_the_side()]))
         p._process_frame(_frame())          # a TypeError here is the failure
         self.assertEqual(p._mp_hands.calls, 1)
