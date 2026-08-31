@@ -11,6 +11,60 @@ from visual_ai.three_d.mesh import Mesh3D
 from visual_ai.three_d.transform import Transform3D
 
 
+class _FaceBatch:
+    """
+    Collected faces as parallel sequences, one entry per face.
+
+    ``depth``, ``item`` and ``face_no`` are arrays because they are the sort
+    keys: the painter's order is then one `np.lexsort` rather than a Python
+    sort over tuples. ``pts``, ``colors``, ``opacity`` and ``wireframe`` are
+    lists the paint loop indexes directly, each built one call per bucket —
+    which is what keeps `_collect_faces` free of per-face Python work.
+
+    ``len`` is the face count, so a caller can still ask how many faces
+    survived the cull.
+    """
+
+    __slots__ = ("depth", "item", "face_no", "pts", "colors", "opacity",
+                 "wireframe")
+
+    def __init__(self, depth, item, face_no, pts, colors, opacity, wireframe):
+        self.depth = depth              # (F,) float: average depth
+        self.item = item                # (F,) int: position in the scene
+        self.face_no = face_no          # (F,) int: position in mesh.faces
+        self.pts = pts                  # F arrays of (K, 2) int32 screen points
+        self.colors = colors            # F shaded BGR triples
+        self.opacity = opacity          # F floats
+        self.wireframe = wireframe      # F bools
+
+    def __len__(self) -> int:
+        return len(self.pts)
+
+    @classmethod
+    def empty(cls) -> "_FaceBatch":
+        return cls(np.empty(0, dtype=np.float64), np.empty(0, dtype=np.intp),
+                   np.empty(0, dtype=np.intp), [], [], [], [])
+
+    @classmethod
+    def concat(cls, batches) -> "_FaceBatch":
+        """One batch out of several, keeping the order they were given in."""
+        batches = [batch for batch in batches if len(batch)]
+        if not batches:
+            return cls.empty()
+        if len(batches) == 1:
+            return batches[0]
+        pts, colors, opacity, wireframe = [], [], [], []
+        for batch in batches:
+            pts.extend(batch.pts)
+            colors.extend(batch.colors)
+            opacity.extend(batch.opacity)
+            wireframe.extend(batch.wireframe)
+        return cls(np.concatenate([b.depth for b in batches]),
+                   np.concatenate([b.item for b in batches]),
+                   np.concatenate([b.face_no for b in batches]),
+                   pts, colors, opacity, wireframe)
+
+
 class Renderer3D:
     """
     Software 3D mesh renderer: depth-sorted, shaded primitives drawn onto
@@ -85,11 +139,9 @@ class Renderer3D:
         ordered by their average depth and one of them wins the whole overlap;
         separate objects are what this is for.
         """
-        faces = []
-        for index, (mesh, transform, material) in enumerate(items):
-            faces.extend(self._collect_faces(mesh, transform, material,
-                                             wireframe, item=index))
-        self._paint(frame, faces)
+        self._paint(frame, _FaceBatch.concat([
+            self._collect_faces(mesh, transform, material, wireframe, item=index)
+            for index, (mesh, transform, material) in enumerate(items)]))
         return frame
 
     def _collect_faces(
@@ -99,14 +151,15 @@ class Renderer3D:
         material: Material | None = None,
         wireframe: bool = False,
         item: int = 0,
-    ) -> list:
+    ) -> "_FaceBatch":
         """
         One mesh's visible faces, shaded and projected, ready for `_paint`.
 
-        Each entry is ``(depth, item, face number, screen points, colour,
-        opacity, wireframe)``. Shading is resolved here rather than at paint
-        time so a painted face carries no reference back to its mesh — which
-        is what lets `render_scene` interleave faces from several of them.
+        The result is a `_FaceBatch`: parallel sequences of depth, item, face
+        number, screen points, colour, opacity and wireframe flag. Shading is
+        resolved here rather than at paint time so a painted face carries no
+        reference back to its mesh — which is what lets `render_scene`
+        interleave faces from several of them.
         """
         if material is None:
             material = Material()
@@ -125,7 +178,7 @@ class Renderer3D:
         #    a time (Painter's algorithm). Everything here used to be a numpy
         #    call per face per frame.
         screen_int = screen_coords.astype(np.int32)
-        render_faces = []   # see the docstring for the entry shape
+        batches = []        # one _FaceBatch per bucket, joined on the way out
 
         for vertex_idx, face_numbers in mesh.face_groups():
             on_screen = valid[vertex_idx].all(axis=1)
@@ -152,27 +205,36 @@ class Renderer3D:
                 shades = None if wireframe else np.ones(len(vertex_idx))
 
             avg_depth = depths[vertex_idx].mean(axis=1)
-            for i in range(len(vertex_idx)):
-                intensity = 1.0 if shades is None else shades[i]
-                shaded_bgr = bgr if wireframe else (
-                    int(min(255, bgr[0] * intensity)),
-                    int(min(255, bgr[1] * intensity)),
-                    int(min(255, bgr[2] * intensity)),
-                )
-                render_faces.append((avg_depth[i], item, face_numbers[i],
-                                     pts[i], shaded_bgr, material.opacity,
-                                     wireframe))
-        return render_faces
+            count = len(vertex_idx)
+            if shades is None:
+                # Wireframe: the line is the material's colour, undimmed.
+                colors = [bgr] * count
+            else:
+                colors = np.minimum(
+                    255.0, np.asarray(bgr, dtype=np.float64) * shades[:, None]
+                ).astype(np.int64).tolist()
+            batches.append(_FaceBatch(
+                avg_depth, np.full(count, item, dtype=np.intp),
+                face_numbers.astype(np.intp, copy=False), list(pts), colors,
+                [material.opacity] * count, [wireframe] * count))
+        return _FaceBatch.concat(batches)
 
-    def _paint(self, frame: np.ndarray, render_faces: list) -> np.ndarray:
+    def _paint(self, frame: np.ndarray, batch: "_FaceBatch") -> np.ndarray:
         """Draw collected faces back to front. See `_collect_faces`."""
+        if not len(batch):
+            return frame
         # Sort faces back to front (largest depth first); equal depths keep
         # mesh order, which is what the old stable sort over faces gave, and
-        # then the order the meshes were handed over in.
-        render_faces.sort(key=lambda face: (-face[0], face[1], face[2]))
+        # then the order the meshes were handed over in. lexsort takes its
+        # primary key last, and is stable, so this is that same ordering.
+        order = np.lexsort((batch.face_no, batch.item, -batch.depth))
 
         frame_h, frame_w = frame.shape[:2]
-        for _, _, _, pts, shaded_bgr, opacity, wireframe in render_faces:
+        pts_all, colors = batch.pts, batch.colors
+        opacity_all, wireframe_all = batch.opacity, batch.wireframe
+        for i in order.tolist():
+            pts, shaded_bgr = pts_all[i], colors[i]
+            opacity, wireframe = opacity_all[i], wireframe_all[i]
             if wireframe:
                 cv2.polylines(frame, [pts], isClosed=True, color=shaded_bgr,
                               thickness=1, lineType=cv2.LINE_AA)
