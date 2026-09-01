@@ -226,6 +226,10 @@ _Z_HISTORY_LEN       = 10      # rolling window size (frames)
 _Z_MIN_HISTORY       = 4       # frames needed before the window can fire
 _Z_CLICK_THRESHOLD   = 0.012   # minimum MediaPipe-Z delta to count as a push
 _Z_CLICK_THRESHOLD_M = 0.030   # minimum ToF depth delta to count as a push (m)
+#: What `sample_depth` multiplies MediaPipe's relative Z by when it fabricates
+#: a depth reading. Simulated depth is that one number rescaled, so the push
+#: threshold has to be rescaled with it - see _depth_and_click.
+_DEPTH_SIM_GAIN      = 0.6
 
 # A depth frame older than this is dropped rather than reused. Sensors stall,
 # and a held frame is indistinguishable downstream from a live one -- which is
@@ -592,6 +596,14 @@ class VisionPipeline(threading.Thread):
 
         # Depth-push click is opt-in; see `_detect_z_click`.
         self.enable_z_click = bool(enable_z_click)
+        #: How far the hand has to travel toward the camera to count as a push,
+        #: in MediaPipe-Z units - `None` keeps `_Z_CLICK_THRESHOLD`. Settable
+        #: because how deep a push is depends on the target: a full-screen
+        #: cursor gets a deliberate jab, while sculptor's mode button is an 88 px
+        #: square reached for mid-sculpt, where the same movement is a nudge.
+        #: `_depth_and_click` converts it for whichever depth branch is live, so
+        #: a game sets one number and does not care which one runs.
+        self.z_click_threshold: float | None = None
 
         # Hand-sign classification is `classify_hand_sign()`'s fixed geometric
         # lookup table by default. Passing a trained `GestureMLP` here swaps
@@ -1729,15 +1741,34 @@ class VisionPipeline(threading.Thread):
         z_click, z_delta, xy_drift = False, 0.0, 0.0
         if self.enable_z_click:
             if depth_active:
+                # Simulated depth is not a sensor reading: it is MediaPipe's own
+                # Z times _DEPTH_SIM_GAIN, so a threshold in sensor millimetres
+                # measures nothing here. Held at 0.030 m it demanded a push of
+                # 0.030 / 0.6 = 0.05 in MediaPipe Z - four times the 0.012 the
+                # same push has to clear with no depth at all - so a game that
+                # sets depth_simulated (labkit sets it for every windowed run)
+                # had a Z-click a player could not fire. Rescaling makes the two
+                # branches ask for the same movement.
+                mp_thr = (_Z_CLICK_THRESHOLD if self.z_click_threshold is None
+                          else float(self.z_click_threshold))
+                if self.depth_simulated and not self.depth_active:
+                    floor = mp_thr * _DEPTH_SIM_GAIN
+                else:
+                    # A real sensor's threshold is in metres of its own, so an
+                    # override scales it rather than replacing it: the caller
+                    # asked for "half as deep a push", not for 0.006 m.
+                    floor = _Z_CLICK_THRESHOLD_M * (mp_thr / _Z_CLICK_THRESHOLD)
                 z_click, z_delta, xy_drift = self._detect_z_click(
                     depth_m, index_pos,
-                    threshold=max(_Z_CLICK_THRESHOLD_M, self.tof_stabilizer.noise_gate * 2.0),
+                    threshold=max(floor, self.tof_stabilizer.noise_gate * 2.0),
                     gs=gs, source="tof",
                 )
             else:
                 # MediaPipe Z decreases toward the camera, same sense as depth.
                 z_click, z_delta, xy_drift = self._detect_z_click(
-                    z_val, index_pos, threshold=_Z_CLICK_THRESHOLD,
+                    z_val, index_pos,
+                    threshold=(_Z_CLICK_THRESHOLD if self.z_click_threshold is None
+                               else float(self.z_click_threshold)),
                     gs=gs, source="mp",
                 )
 
@@ -1945,7 +1976,7 @@ class VisionPipeline(threading.Thread):
         measured = z_m is not None
         if z_m is None:
             # Simulated hardware ToF depth reading centered around 0.45m calibrated baseline
-            z_m = 0.45 + (lm_z * 0.6)
+            z_m = 0.45 + (lm_z * _DEPTH_SIM_GAIN)
 
         z_m = round(max(0.15, z_m), 4)
         # Say what it is. The old labels said "ToF Hardware" for a number
