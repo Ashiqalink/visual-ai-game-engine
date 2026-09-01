@@ -20,6 +20,7 @@ from visual_ai import (
     Transform3D,
     VisionPipeline,
     display,
+    voxel,
 )
 
 
@@ -48,6 +49,13 @@ def main():
     pyramid_mesh = Mesh3D.create_pyramid(width=60.0, height=80.0)
     sphere_mesh = Mesh3D.create_sphere(radius=35.0, rings=8, sectors=12)
     cylinder_mesh = Mesh3D.create_cylinder(radius=30.0, height=70.0, segments=10)
+
+    # Two voxel models: occupancy grids meshed into their exposed quads only,
+    # drawn by the same renderer as the primitives above. They are here for
+    # the cost, not the looks - the gear is 1024 faces and the tree 632
+    # against the cube's 6, so a frame that carries them is the honest one.
+    gear_mesh = voxel.MODELS["gear"]()
+    tree_mesh = voxel.MODELS["tree"]()
 
     # 1. Rotating Gold Cube
     gold_mat = Material.preset("gold")
@@ -91,6 +99,26 @@ def main():
         scale=1.0,
         material=glass_mat,
         mesh=cylinder_mesh
+    )
+
+    # 5. Voxel Gear
+    engine.add_3d_element(
+        name="VoxelGear",
+        x=-300.0, y=-60.0, z=-50.0,
+        vrx=0.0, vry=50.0, vrz=20.0,
+        scale=0.45,
+        material=Material.preset("metal"),
+        mesh=gear_mesh
+    )
+
+    # 6. Voxel Tree
+    engine.add_3d_element(
+        name="VoxelTree",
+        x=300.0, y=60.0, z=-50.0,
+        vrx=0.0, vry=35.0, vrz=0.0,
+        scale=0.45,
+        material=Material.preset("plastic"),
+        mesh=tree_mesh
     )
 
     # Queue for AI camera payloads

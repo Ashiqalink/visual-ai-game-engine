@@ -84,7 +84,13 @@ from visual_ai.noise_filter import (
     ema_alpha_to_cutoff,
 )
 from visual_ai.pipeline import VisionPipeline
-from visual_ai.three_d import Camera3D, Mesh3D, Renderer3D, Transform3D
+from visual_ai.three_d import (
+    Camera3D,
+    Mesh3D,
+    Renderer3D,
+    Transform3D,
+    voxel,
+)
 from visual_ai.segment import PersonSegmenter
 from visual_ai.spritegen import (
     BODY_SHAPES,
@@ -160,6 +166,7 @@ __all__ = [
     "Camera3D",
     "Mesh3D",
     "Renderer3D",
+    "voxel",
     # Core Math Utils
     "Vector2",
     "Vector3",

@@ -16,6 +16,7 @@ from visual_ai.three_d.camera import Camera3D
 from visual_ai.three_d.mesh import Mesh3D
 from visual_ai.three_d.renderer import Renderer3D
 from visual_ai.three_d.transform import Transform3D
+from visual_ai.three_d import voxel
 
 __all__ = [
     "Camera3D",
@@ -24,4 +25,5 @@ __all__ = [
     "Renderer3D",
     "ShaderType",
     "Transform3D",
+    "voxel",
 ]
