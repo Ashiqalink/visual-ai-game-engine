@@ -137,13 +137,21 @@ _ANCHORS = _ssd_anchors()
 
 # ── Geometry ──────────────────────────────────────────────────────────────────
 
-def _letterbox(rgb: np.ndarray, size: int):
-    """Aspect-preserving fit into a square, zero-padded — MediaPipe's ImageToTensor."""
+def _letterbox(rgb: np.ndarray, size: int, out: np.ndarray | None = None):
+    """
+    Aspect-preserving fit into a square, zero-padded — MediaPipe's ImageToTensor.
+
+    `out` is the network's own input buffer when there is one, so the padded
+    square is written where the device already reads from instead of being
+    built and then copied. It is cleared first: only the letterbox bars are
+    rewritten every frame, and last frame's image is still under them.
+    """
     height, width = rgb.shape[:2]
     scale = size / max(height, width)
     new_h, new_w = int(round(height * scale)), int(round(width * scale))
     resized = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-    canvas = np.zeros((size, size, 3), np.uint8)
+    canvas = np.zeros((size, size, 3), np.uint8) if out is None else out
+    canvas[:] = 0
     top, left = (size - new_h) // 2, (size - new_w) // 2
     canvas[top:top + new_h, left:left + new_w] = resized
     return canvas, scale, left, top
@@ -230,8 +238,14 @@ def _rect_bounds(rect) -> tuple[float, float, float, float]:
     return cx - half, cy - half, cx + half, cy + half
 
 
-def _crop(rgb: np.ndarray, rect, out_size: int):
-    """Rotated crop to a square, plus the affine that maps landmarks back."""
+def _crop(rgb: np.ndarray, rect, out_size: int, out: np.ndarray | None = None):
+    """
+    Rotated crop to a square, plus the affine that maps landmarks back.
+
+    `out` is the landmark network's input buffer when there is one; warpAffine
+    covers every pixel of its destination, so unlike the letterbox there is
+    nothing to clear.
+    """
     cx, cy, size, angle = rect
     half = size / 2.0
     cos_a, sin_a = math.cos(angle), math.sin(angle)
@@ -242,7 +256,8 @@ def _crop(rgb: np.ndarray, rect, out_size: int):
     ])
     target = np.float32([[0, 0], [out_size, 0], [0, out_size]])
     forward = cv2.getAffineTransform(source, target)
-    crop = cv2.warpAffine(rgb, forward, (out_size, out_size), flags=cv2.INTER_LINEAR)
+    crop = cv2.warpAffine(rgb, forward, (out_size, out_size), dst=out,
+                          flags=cv2.INTER_LINEAR)
     return crop, cv2.invertAffineTransform(forward)
 
 
@@ -285,6 +300,38 @@ class _Result:
 
 
 # ── The tracker ───────────────────────────────────────────────────────────────
+
+def _u8_input(core, model, ov):
+    """
+    Fold `uint8 -> float32, divide by 255` into the model.
+
+    Both networks want 0..1 float32 and the conversion used to be numpy's:
+    an `astype` and a divide per crop, two full-size temporaries, and four
+    times the bytes handed to the driver. OpenVINO's PrePostProcessor
+    compiles the same two operations into the model instead, so the input
+    tensor is the crop exactly as `cv2.warpAffine` leaves it.
+
+    Measured with the persistent input tensors below, alternated inside each
+    run and repeated in three fresh processes (medians, `full` tier):
+
+      device  network   numpy      folded
+      NPU     landmark  1.99 ms -> 1.31 ms
+      NPU     palm      2.99 ms -> 2.46 ms
+      iGPU    landmark  2.55 ms -> 2.03 ms
+      iGPU    palm      2.65 ms -> 2.14 ms
+
+    The maths is the same but the rounding is not - the divide now happens
+    in the device's precision rather than in float32 on the host - and the
+    logits move by up to 0.3 where they reach 180. Repeated inference is
+    bit-identical on both devices, so that is the whole of the difference.
+    """
+    from openvino.preprocess import PrePostProcessor
+
+    ppp = PrePostProcessor(model)
+    ppp.input().tensor().set_element_type(ov.Type.u8)
+    ppp.input().preprocess().convert_element_type(ov.Type.f32).scale(255.0)
+    return ppp.build()
+
 
 def _model_paths(tier: str) -> tuple[str, str]:
     """The two `.tflite` files inside the installed mediapipe package."""
@@ -342,10 +389,31 @@ class OpenVINOHands:
         try:
             core = ov.Core()
             hint = {"PERFORMANCE_HINT": "LATENCY"}
+            palm_model = _u8_input(core, core.read_model(palm_path), ov)
+            land_model = _u8_input(core, core.read_model(land_path), ov)
             self._palm = core.compile_model(
-                core.read_model(palm_path), device, hint).create_infer_request()
-            self._land = core.compile_model(
-                core.read_model(land_path), device, hint).create_infer_request()
+                palm_model, device, hint).create_infer_request()
+            #: The palm network's input, written in place by `_letterbox` and
+            #: bound once. `start_async()` then takes no argument, and nothing
+            #: is allocated or copied on the way to the device.
+            self._palm_input = np.zeros((1, _PALM_SIZE, _PALM_SIZE, 3), np.uint8)
+            # `shared_memory=True` is the whole point: the default copies the
+            # array once, at bind time, and every later write to the buffer is
+            # then invisible to the device.  The network keeps inferring on the
+            # frame it was given first, at exactly the same speed.
+            self._palm.set_input_tensor(ov.Tensor(self._palm_input, shared_memory=True))
+            #: One landmark request per tracked hand, each with its own input
+            #: buffer, so a frame with two hands can have both in flight at
+            #: once - see `_run_landmarks`. One compiled model serves them all.
+            land_compiled = core.compile_model(land_model, device, hint)
+            self._land_inputs = [
+                np.zeros((1, _LAND_SIZE, _LAND_SIZE, 3), np.uint8)
+                for _ in range(max(1, int(max_num_hands)))]
+            self._land = []
+            for buffer in self._land_inputs:
+                request = land_compiled.create_infer_request()
+                request.set_input_tensor(ov.Tensor(buffer, shared_memory=True))
+                self._land.append(request)
         except Exception as exc:
             raise OpenVINOHandsUnavailable(
                 f"could not compile the hand networks for {device}: {exc}") from exc
@@ -371,24 +439,25 @@ class OpenVINOHands:
 
     def _start_palms(self, rgb: np.ndarray) -> None:
         """Submit one palm detection. `_finish_palms` decodes it, later."""
-        letterboxed, scale, left, top = _letterbox(rgb, _PALM_SIZE)
-        # 0..1, not -1..1: see the module docstring.
-        tensor = (letterboxed.astype(np.float32) / 255.0)[None]
+        # Straight into the bound input tensor. The 0..1 scaling the network
+        # wants - 0..1, not -1..1: see the module docstring - is folded into
+        # the model itself by `_u8_input`.
+        _, scale, left, top = _letterbox(rgb, _PALM_SIZE, out=self._palm_input[0])
 
         started = time.perf_counter()
-        self._palm.start_async([tensor])
+        self._palm.start_async()
         self.timings["palm_ms"] += (time.perf_counter() - started) * 1e3
         self.timings["detector_runs"] += 1
-        # `tensor` is the device's input buffer until the request completes, so
-        # it is held here rather than left for the garbage collector.
-        self._pending = (tensor, scale, left, top)
+        # `_palm_input` is the device's buffer until the request completes, so
+        # nothing may write to it before `_finish_palms` clears this.
+        self._pending = (scale, left, top)
 
     def _finish_palms(self, block: bool) -> list[dict] | None:
         """
         The submitted detection's boxes in pixels, or None when `block` is
         False and the device has not finished with it yet.
         """
-        _, scale, left, top = self._pending
+        scale, left, top = self._pending
 
         started = time.perf_counter()
         if not block and not self._palm.wait_for(0):
@@ -435,13 +504,44 @@ class OpenVINOHands:
                                 (y1 * _PALM_SIZE - top) / scale)
         return detections
 
-    def _landmarks(self, rgb: np.ndarray, rect) -> dict:
-        crop, inverse = _crop(rgb, rect, _LAND_SIZE)
-        tensor = (crop.astype(np.float32) / 255.0)[None]
+    def _run_landmarks(self, rgb: np.ndarray, rects) -> list:
+        """
+        Run the landmark network on every tracked rect, and return the results.
+
+        Every crop is submitted before any of them is waited on. Two hands are
+        two independent networks on the same device, and running them back to
+        back leaves it idle across each read-back; overlapping them costs
+        nothing when there is only one. Interleaved A/B on two distinct crops,
+        three fresh processes, outputs asserted identical between the arms:
+
+          NPU   2.85-2.93 ms sequential -> 2.27-2.35 overlapped
+          iGPU  3.85-4.27 ms sequential -> 4.02-4.21 overlapped
+
+        So this is an NPU optimisation, not a general one. The iGPU already
+        serialises the two requests internally and the extra bookkeeping puts
+        it a shade behind - within the run-to-run spread, but never ahead. It
+        is kept because the NPU is the default device and the iGPU pays
+        nothing measurable for it.
+
+        `timings["land_ms"]` stays comparable with the sequential version by
+        covering the same span: submission to the last completion, with the
+        crops before it and the decode after it outside.
+        """
+        inverses = [_crop(rgb, rect, _LAND_SIZE, out=self._land_inputs[slot][0])[1]
+                    for slot, rect in enumerate(rects)]
 
         started = time.perf_counter()
-        outputs = self._land.infer([tensor])
+        for slot in range(len(inverses)):
+            self._land[slot].start_async()
+        for slot in range(len(inverses)):
+            self._land[slot].wait()
         self.timings["land_ms"] += (time.perf_counter() - started) * 1e3
+        return [self._decode_landmarks(slot, inverse, rect)
+                for slot, (inverse, rect) in enumerate(zip(inverses, rects))]
+
+    def _decode_landmarks(self, slot: int, inverse, rect) -> dict:
+        """One finished landmark request, back in pixel space."""
+        outputs = self._land[slot].results
 
         # Four same-named outputs; sort by port name so the mapping is fixed:
         # the 63-wide pair is screen then world landmarks, the 1-wide pair is
@@ -524,8 +624,7 @@ class OpenVINOHands:
         landmark_lists: list[_LandmarkList] = []
         handedness_lists: list[_ClassificationList] = []
 
-        for rect in self._rects:
-            hand = self._landmarks(rgb, rect)
+        for hand in self._run_landmarks(rgb, self._rects):
             if hand["presence"] < self.min_tracking_confidence:
                 continue                          # tracking lost; detector re-runs
             pixels, depth = hand["pixels"], hand["z"]

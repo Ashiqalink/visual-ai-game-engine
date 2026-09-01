@@ -103,7 +103,16 @@ class _Compiled:
     def create_infer_request(self):
         return self
 
-    def infer(self, _inputs):
+    def set_input_tensor(self, tensor):
+        self.bound = tensor
+
+    def start_async(self, _inputs=None):
+        self.results = self.infer(_inputs)
+
+    def wait(self):
+        pass
+
+    def infer(self, _inputs=None):
         self.calls += 1
         return dict(self._outputs)
 
@@ -136,6 +145,65 @@ class _Core:
         return f"Fake {device}"
 
 
+class _Type:
+    """`ov.Type.u8` / `ov.Type.f32` as plain markers."""
+
+    u8 = "u8"
+    f32 = "f32"
+
+
+class _FakePrePostProcessor:
+    """
+    Records the u8 fold and hands the model straight back.
+
+    What the real one does to the graph cannot be checked without a real
+    plugin, so what is checked here is that the fold was asked for at all:
+    the model would otherwise be compiled expecting float32 and fed uint8.
+    """
+
+    def __init__(self, model):
+        self._model = model
+        model.preprocessed = []
+
+    def input(self, *_args):
+        return self
+
+    def tensor(self):
+        return self
+
+    def preprocess(self):
+        return self
+
+    def set_element_type(self, element_type):
+        self._model.preprocessed.append(("element_type", element_type))
+        return self
+
+    def convert_element_type(self, element_type):
+        self._model.preprocessed.append(("convert", element_type))
+        return self
+
+    def scale(self, value):
+        self._model.preprocessed.append(("scale", value))
+        return self
+
+    def build(self):
+        return self._model
+
+
+def _fake_tensor(array, shared_memory=False):
+    """
+    Stand in for `ov.Tensor`, and refuse the default the real one has.
+
+    `ov.Tensor(array)` copies. A request bound to that copy reads what the
+    buffer held at bind time for the rest of its life, at exactly the same
+    speed, so nothing here or in a benchmark would notice. Since nothing in
+    this file runs a network, passing the array straight through is enough --
+    but only if the caller asked to share it.
+    """
+    assert shared_memory, "the device would be bound to a copy of this buffer"
+    return array
+
+
 class _FakeOpenVINO:
     """Installs a stand-in `openvino` module for the body of a `with`."""
 
@@ -148,15 +216,24 @@ class _FakeOpenVINO:
         module = types.ModuleType("openvino")
         module.Core = lambda: self.core
         module.PartialShape = _PartialShape
+        module.Type = _Type
+        module.Tensor = _fake_tensor
+        preprocess = types.ModuleType("openvino.preprocess")
+        preprocess.PrePostProcessor = _FakePrePostProcessor
+        module.preprocess = preprocess
         self._previous = sys.modules.get("openvino")
+        self._previous_pp = sys.modules.get("openvino.preprocess")
         sys.modules["openvino"] = module
+        sys.modules["openvino.preprocess"] = preprocess
         return self
 
     def __exit__(self, *exc):
-        if self._previous is None:
-            sys.modules.pop("openvino", None)
-        else:
-            sys.modules["openvino"] = self._previous
+        for name, previous in (("openvino", self._previous),
+                               ("openvino.preprocess", self._previous_pp)):
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
 
 
 # ── the hand graph ────────────────────────────────────────────────────────────
@@ -209,22 +286,36 @@ def _land_output(points, presence=0.99, handedness=0.9):
 
 
 class _StubRequest:
-    """Returns each queued output in turn, and remembers how often it ran."""
+    """
+    One request slot. Outputs come from a queue it may share with its peers.
+
+    The landmark network has one request per tracked hand now, all of them
+    in flight at once, but a test still wants to write one list of outputs
+    and have them consumed in submission order — so the slots share a
+    `_StubQueue` and each keeps whichever output it was handed.
+    """
 
     def __init__(self, outputs):
-        self._outputs = list(outputs)
-        self.calls = 0
+        self.queue = outputs if isinstance(outputs, _StubQueue) else _StubQueue(outputs)
         self.results = None
 
-    def infer(self, _inputs):
-        self.calls += 1
-        return self._outputs[min(self.calls - 1, len(self._outputs) - 1)]
+    @property
+    def calls(self):
+        """How often the *queue* ran, which is what the old stub counted."""
+        return self.queue.calls
 
-    # The async surface the detector goes through. A stub has always finished
+    def set_input_tensor(self, tensor):
+        self.bound = tensor
+
+    def infer(self, _inputs=None):
+        self.results = self.queue.next()
+        return self.results
+
+    # The async surface both networks go through. A stub has always finished
     # by the time it is asked, so `wait_for` is never the reason a detection
     # is left pending — only the module's own rule about when to overlap is.
-    def start_async(self, inputs):
-        self.results = self.infer(inputs)
+    def start_async(self, inputs=None):
+        self.infer(inputs)
 
     def wait(self):
         pass
@@ -233,14 +324,36 @@ class _StubRequest:
         return True
 
 
+class _StubQueue:
+    """Queued outputs, handed out in order and repeating the last one."""
+
+    def __init__(self, outputs):
+        self._outputs = list(outputs)
+        self.calls = 0
+
+    def next(self):
+        self.calls += 1
+        return self._outputs[min(self.calls - 1, len(self._outputs) - 1)]
+
+
 def _hands(palm_outputs, land_outputs, **kwargs):
     """An `OpenVINOHands` wired to stub networks, without compiling anything."""
+    slots = kwargs.get("max_num_hands", 1)
     hands = object.__new__(openvino_hands.OpenVINOHands)
     hands._palm = _StubRequest(palm_outputs)
-    hands._land = _StubRequest(land_outputs)
+    hands._palm_input = np.zeros(
+        (1, openvino_hands._PALM_SIZE, openvino_hands._PALM_SIZE, 3), np.uint8)
+    #: One queue across every landmark slot, so `land_outputs` is still read
+    #: in submission order however many hands are being tracked.
+    hands._land_queue = _StubQueue(land_outputs)
+    hands._land = [_StubRequest(hands._land_queue) for _ in range(slots)]
+    hands._land_inputs = [
+        np.zeros((1, openvino_hands._LAND_SIZE, openvino_hands._LAND_SIZE, 3),
+                 np.uint8)
+        for _ in range(slots)]
     hands.device = "NPU"
     hands.tier = "full"
-    hands.max_num_hands = kwargs.get("max_num_hands", 1)
+    hands.max_num_hands = slots
     hands.min_detection_confidence = kwargs.get("min_detection_confidence", 0.7)
     hands.min_tracking_confidence = kwargs.get("min_tracking_confidence", 0.65)
     hands.async_detector = kwargs.get("async_detector", True)
@@ -261,9 +374,9 @@ class TestHandGraphEndToEnd(unittest.TestCase):
         self.rects = []
         self._real_crop = openvino_hands._crop
 
-        def recording_crop(rgb, rect, out_size):
+        def recording_crop(rgb, rect, out_size, out=None):
             self.rects.append(rect)
-            return self._real_crop(rgb, rect, out_size)
+            return self._real_crop(rgb, rect, out_size, out)
 
         openvino_hands._crop = recording_crop
         self.addCleanup(setattr, openvino_hands, "_crop", self._real_crop)
@@ -352,7 +465,7 @@ class TestTracking(unittest.TestCase):
         for _ in range(4):
             hands.process(_blank_frame())
         self.assertEqual(hands._palm.calls, 1)
-        self.assertEqual(hands._land.calls, 4)
+        self.assertEqual(hands._land_queue.calls, 4)
         self.assertEqual(hands.timings["detector_runs"], 1)
         self.assertEqual(hands.timings["frames"], 4)
 
@@ -392,7 +505,7 @@ class TestTracking(unittest.TestCase):
                        min_detection_confidence=0.7)
         result = hands.process(_blank_frame())
         self.assertIsNone(result.multi_hand_landmarks)
-        self.assertEqual(hands._land.calls, 0)
+        self.assertEqual(hands._land_queue.calls, 0)
 
     def test_close_forgets_the_tracked_rois(self):
         hands = _hands([_palm_output()], [_land_output(np.zeros(63))])
