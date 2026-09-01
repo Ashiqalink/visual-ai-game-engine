@@ -298,31 +298,27 @@ _MAX_FACES = 4
 # real other hand is never looked for. Same slot-starvation as a face-as-hand,
 # different cause. depthpong is where it shows, for the same reason.
 #
-# The case that must survive is one hand overlapping the other, which is where
-# palm-centre separation alone is not enough: the centres genuinely coincide.
-# MediaPipe's landmark z cannot separate them -- it is zero at the wrist and
-# per-hand, so it is not comparable between two hands (see the `landmarks`
-# note in the payload spec above), and `multi_hand_world_landmarks` is
-# hand-centred for the same reason. Nor can depth_grid help here: without a
-# sensor that grid is synthesised *from* the hands this filter is deciding on.
+# The test is proximity: two hands whose palm centres sit within a fraction of
+# a palm span of each other are one hand, and the later one is dropped.
 #
-# What is comparable across hands in one frame is apparent size. Two hands
-# cannot occupy the same space, so two that overlap are at different distances
-# and image at measurably different palm spans, while two boxes on one hand
-# come from the same landmark model on near-identical crops and agree to a few
-# percent. That is the depth signal, and it is free.
+# It used to be three tests -- centres, then apparent size, then per-landmark
+# pose -- so that one real hand held over the other survived, on the argument
+# that the nearer hand images larger while two boxes on one hand agree to a
+# few percent. That let copies through. The two crops a copy comes from
+# differ in scale and position (the detector's palm rect against the
+# tracker's landmark rect, or a stale find on a moving hand), so the landmark
+# network returns spans that differ by more than the 12% the size test
+# allowed, and the game drew two skeletons on one hand. A copy is what the
+# player sees every session; two hands overlapping this closely is rare, and
+# they come back as two the moment they part. So the rule is the simple one.
+# `play <title> --hands 1` removes the question entirely: with one slot the
+# backend stops looking once a hand is held, and there is nothing to copy.
 #
-# So three tests, cheapest first, all in palm spans so they hold at arm's
-# length and up against the lens alike:
-#: 1. Palm centres nearer than this many palm spans -- a prefilter, so the
-#:    21-point comparison below only runs on candidates that could be a pair.
+# Written in palm spans (wrist to middle-finger MCP) so it holds at arm's
+# length and up against the lens alike. The accelerated backend applies the
+# same test one stage earlier, on its tracking rects (`_DUP_SPAN` in
+# openvino_hands.py), because only there can the copy's slot be freed.
 _DUP_HAND_SPAN = 0.6
-#: 2. Apparent-size ratio. Above this the two are at different depths, which
-#:    is the overlapping-hands case, and neither is a copy of the other.
-_DUP_HAND_SCALE = 1.12
-#: 3. Mean per-landmark separation, in palm spans. A copy agrees across all 21
-#:    points; two hands that merely coincide differ in finger pose.
-_DUP_HAND_POSE = 0.35
 
 
 def classify_hand_sign(fingers_extended) -> str:
@@ -1251,6 +1247,7 @@ class VisionPipeline(threading.Thread):
             if run_detection:
                 gate = face_box if (face_visible and self.face_hand_filter) else None
                 before = getattr(self._mp_hands, "face_rejects", 0)
+                copies_before = getattr(self._mp_hands, "duplicate_rejects", 0)
                 # Only the accelerated backend takes a face box; MediaPipe's own
                 # `process()` has no such argument, and neither does a test
                 # double — so the backend is asked rather than assumed.
@@ -1266,6 +1263,9 @@ class VisionPipeline(threading.Thread):
                     sets, scores, dropped = self._drop_face_hands(sets, scores, gate)
                     rejected += dropped
                 sets, scores, duplicates = self._drop_duplicate_hands(sets, scores)
+                # ...plus the copies the accelerated backend dropped at the source.
+                duplicates += (getattr(self._mp_hands, "duplicate_rejects", 0)
+                               - copies_before)
                 self.duplicate_hands_rejected_total += duplicates
                 self._cached_landmark_sets = sets
                 self._cached_handedness = scores
@@ -1410,7 +1410,8 @@ class VisionPipeline(threading.Thread):
 
         Returns ``(landmark_sets, handedness, dropped)``, the two lists still
         parallel for the same reason as in `_drop_face_hands`. See the
-        `_DUP_HAND_SPAN` note for why the test is written in palm spans.
+        `_DUP_HAND_SPAN` note for why the test is proximity alone and why it
+        is written in palm spans.
         """
         if len(landmark_sets) < 2:
             return landmark_sets, handedness, 0
@@ -1421,25 +1422,19 @@ class VisionPipeline(threading.Thread):
                       (pts[0][1] + pts[5][1] + pts[17][1]) / 3.0)
             # Wrist to middle-finger MCP: the one length that scales with the
             # hand and not with which fingers happen to be extended.
-            return pts, centre, _dist2d(pts[0], pts[9])
+            return centre, _dist2d(pts[0], pts[9])
 
         def is_copy(a, b):
-            (pts_a, centre_a, span_a), (pts_b, centre_b, span_b) = a, b
-            near = min(span_a, span_b)
-            if _dist2d(centre_a, centre_b) >= _DUP_HAND_SPAN * near:
-                return False
-            if max(span_a, span_b) > _DUP_HAND_SCALE * near:
-                return False           # different apparent size — different depth
-            mean_sep = sum(_dist2d(p, q) for p, q in zip(pts_a, pts_b)) / len(pts_a)
-            return mean_sep < _DUP_HAND_POSE * near
+            (centre_a, span_a), (centre_b, span_b) = a, b
+            return _dist2d(centre_a, centre_b) < _DUP_HAND_SPAN * min(span_a, span_b)
 
         kept_sets, kept_scores, kept, dropped = [], [], [], 0
         for i, lm_set in enumerate(landmark_sets):
             measured = measure(lm_set)
             # A degenerate span cannot be measured against, so such a set is
             # kept rather than guessed about.
-            if measured[2] > 0.0 and any(
-                is_copy(measured, other) for other in kept if other[2] > 0.0
+            if measured[1] > 0.0 and any(
+                is_copy(measured, other) for other in kept if other[1] > 0.0
             ):
                 dropped += 1
                 continue

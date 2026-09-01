@@ -75,6 +75,30 @@ _LAND_SCALE, _LAND_SHIFT_Y = 1.8, -0.2
 #: rather than tracked twice. MediaPipe's AssociationNormRect threshold.
 _ASSOCIATION_IOU = 0.5
 
+#: The second association test, and the one that actually catches a copy.
+#: IoU punishes a size mismatch: the tracked rect is 1.8x the landmark bounds
+#: while the detector's is 2.6x the palm box, and on a fist or a half-hidden
+#: hand the palm box comes back small enough that two rects on the *same*
+#: hand share less than half their union — so the find was adopted and the
+#: hand tracked twice. The fraction of the smaller rect that the larger one
+#: covers does not care about the mismatch (concentric rects score 1.0
+#: whatever their sizes), so a detection whose rect is mostly inside a
+#: tracked one is that hand found again. Two hands side by side score about
+#: 0.45 here (rects 1.8 hand-widths wide, centres one hand-width apart),
+#: which is why the threshold sits above that.
+_ASSOCIATION_COVER = 0.7
+
+#: Two tracked hands whose palm centres are nearer than this many palm spans
+#: (wrist to middle-finger MCP) are one hand tracked twice: the detector's
+#: stale find on a moving hand, adopted a frame late, converges onto the same
+#: hand the moment the landmark network sees the crop. The later rect is
+#: dropped, which frees the slot for the hand that is actually missing;
+#: `_DUP_HAND_SPAN` in pipeline.py is the same test one stage later, for the
+#: MediaPipe backend. Two real hands overlapping this closely collapse to one
+#: as well, deliberately: a copy is what the player sees every session, and
+#: two hands come back as two the moment they part.
+_DUP_SPAN = 0.6
+
 #: A candidate whose landmarks sit on the detected face has to clear this
 #: instead of the ordinary gates. The palm network fires on a face often
 #: enough to matter, and a false hand costs far more here than a missed one:
@@ -165,6 +189,16 @@ def _iou(a: tuple[float, float, float, float], b) -> float:
     inter = inter_w * inter_h
     union = (ax1 - ax0) * (ay1 - ay0) + (bx1 - bx0) * (by1 - by0) - inter
     return inter / union if union > 0 else 0.0
+
+
+def _cover(a: tuple[float, float, float, float], b) -> float:
+    """Intersection over the *smaller* area: 1.0 for concentric rects of any sizes."""
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    inter_w = max(0.0, min(ax1, bx1) - max(ax0, bx0))
+    inter_h = max(0.0, min(ay1, by1) - max(ay0, by0))
+    smaller = min((ax1 - ax0) * (ay1 - ay0), (bx1 - bx0) * (by1 - by0))
+    return inter_w * inter_h / smaller if smaller > 0 else 0.0
 
 
 def _face_bounds(face_box) -> tuple[float, float, float, float] | None:
@@ -432,6 +466,10 @@ class OpenVINOHands:
         #: get a second hand tracked needs to know whether their face is eating
         #: the slot, and this is the only place that is visible.
         self.face_rejects = 0
+        #: Copies of a hand already held, cumulative: detector finds the IoU
+        #: test would have tracked twice, plus rects that converged onto a
+        #: hand already kept. `pipeline.py` folds it into its own count.
+        self.duplicate_rejects = 0
         #: Per-stage timings, so a HUD or bench can see where the frame went.
         self.timings = {"palm_ms": 0.0, "land_ms": 0.0, "detector_runs": 0, "frames": 0}
 
@@ -566,6 +604,19 @@ class OpenVINOHands:
         return {"pixels": pixels, "z": depth, "presence": presence,
                 "handedness": handedness}
 
+    def _already_held(self, bounds) -> bool:
+        """Whether a fresh palm rect is a hand that is already being tracked."""
+        for known in self._rects:
+            known_bounds = _rect_bounds(known)
+            if _iou(bounds, known_bounds) > _ASSOCIATION_IOU:
+                return True
+            if _cover(bounds, known_bounds) > _ASSOCIATION_COVER:
+                # Only this branch is a copy the IoU test alone would have
+                # tracked, so only this branch counts.
+                self.duplicate_rejects += 1
+                return True
+        return False
+
     def _adopt(self, detections: list[dict], face=None) -> None:
         """Turn fresh palm boxes into tracking rects, skipping hands already held."""
         for detection in detections:
@@ -573,9 +624,7 @@ class OpenVINOHands:
                 break
             rect = _rect_from_box(detection["box"], detection["kp"][0],
                                   detection["kp"][2], _PALM_SCALE, _PALM_SHIFT_Y)
-            bounds = _rect_bounds(rect)
-            if any(_iou(bounds, _rect_bounds(known)) > _ASSOCIATION_IOU
-                   for known in self._rects):
+            if self._already_held(_rect_bounds(rect)):
                 continue                          # already tracking this hand
             # Never adopt a marginal detection that is sitting on the face: the
             # rect it would take is the one the second hand needs, and holding
@@ -623,6 +672,8 @@ class OpenVINOHands:
         surviving: list[tuple[float, float, float, float]] = []
         landmark_lists: list[_LandmarkList] = []
         handedness_lists: list[_ClassificationList] = []
+        #: Palm centre and span of each hand kept this frame, for `_DUP_SPAN`.
+        palms: list[tuple[tuple[float, float], float]] = []
 
         for hand in self._run_landmarks(rgb, self._rects):
             if hand["presence"] < self.min_tracking_confidence:
@@ -636,6 +687,17 @@ class OpenVINOHands:
                                 float(pixels[:, 1].mean()), face)):
                 self.face_rejects += 1
                 continue
+            # The same reasoning for a copy: a rect that has converged onto a
+            # hand already kept this frame goes *with its rect*, so the slot
+            # frees and the detector re-runs for the hand that is missing.
+            centre = (float(pixels[[0, 5, 17], 0].mean()),
+                      float(pixels[[0, 5, 17], 1].mean()))
+            span = float(np.hypot(*(pixels[9] - pixels[0])))
+            if any(math.dist(centre, other) < _DUP_SPAN * min(span, other_span)
+                   for other, other_span in palms):
+                self.duplicate_rejects += 1
+                continue
+            palms.append((centre, span))
             landmark_lists.append(_LandmarkList([
                 _Landmark(float(x) / width, float(y) / height, float(z) / width)
                 for (x, y), z in zip(pixels, depth)
