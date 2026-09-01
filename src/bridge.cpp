@@ -10,6 +10,14 @@
 namespace py = pybind11;
 using namespace vision_engine;
 
+// The block and debris vectors are the engine's own storage, not values to be
+// converted. Without these two lines pybind11/stl.h copies each one into a
+// fresh Python list on every get_blocks()/get_debris() call, which is what made
+// the compiled core hand out a snapshot where the fallback hands out the list
+// it iterates. See the bindings for BlockList/DebrisList below.
+PYBIND11_MAKE_OPAQUE(std::vector<vision_engine::Block>)
+PYBIND11_MAKE_OPAQUE(std::vector<vision_engine::Debris>)
+
 namespace {
 
 // The SDK exposes exactly one Material type: visual_ai.material.Material.
@@ -160,6 +168,36 @@ private:
     std::vector<py::object> m_wrappers;
 };
 
+// A read-only, live view onto one of the engine's vectors.
+//
+// Only `__len__` and `__getitem__` are bound, and `__getitem__` returns a copy
+// of the element. That is deliberate on both counts:
+//
+//   * update() erases destroyed blocks and expired debris from the middle of
+//     these vectors, so a reference to an element would dangle the moment
+//     anything ahead of it died. A copy is exactly what the read-only Block
+//     and Debris bindings already handed out, and it cannot outlive its slot.
+//   * iteration therefore runs through Python's sequence protocol, which asks
+//     for index 0, 1, 2 ... until IndexError. Every step re-checks the bound
+//     against the vector's current size, so a loop that shrinks the engine's
+//     storage mid-pass stops short instead of walking off the end - which a
+//     cached C++ iterator would do.
+//
+// The view is not a `list`, which the fallback's return value is; `len()`,
+// indexing and iteration are the whole shared surface.
+template <typename T>
+void bind_live_view(py::module_& m, const char* name) {
+    using Vec = std::vector<T>;
+    py::class_<Vec>(m, name)
+        .def("__len__", [](const Vec& v) { return v.size(); })
+        .def("__getitem__", [](const Vec& v, py::ssize_t i) -> T {
+            const auto size = static_cast<py::ssize_t>(v.size());
+            if (i < 0) i += size;
+            if (i < 0 || i >= size) throw py::index_error();
+            return v[static_cast<size_t>(i)];
+        });
+}
+
 }  // namespace
 
 PYBIND11_MODULE(engine_core, m) {
@@ -222,6 +260,9 @@ PYBIND11_MODULE(engine_core, m) {
         .def_readonly("active", &Debris::active)
         .def_readonly("material", &Debris::material);
 
+    bind_live_view<Block>(m, "BlockList");
+    bind_live_view<Debris>(m, "DebrisList");
+
     py::class_<PyGameEngine>(m, "GameEngine")
         .def(py::init<float, float>(),
              py::arg("width") = 800.0f,
@@ -277,8 +318,17 @@ PYBIND11_MODULE(engine_core, m) {
              },
              py::arg("x"), py::arg("y"), py::arg("w"), py::arg("h"), py::arg("health"),
              py::arg("material") = py::none())
-        .def("get_blocks", &PyGameEngine::get_blocks)
-        .def("get_debris", &PyGameEngine::get_debris)
+        // Live views, not snapshots. The fallback returns the very list it
+        // iterates, so `blocks = engine.get_blocks()` there keeps tracking the
+        // engine across update()'s compaction; this used to return a fresh
+        // list of copies per call, so the same line held a stale frame on any
+        // machine where the compiled core loaded. reference_internal hands
+        // back the vector itself - the same Python object each call, kept
+        // alive by the engine - which is what closes that.
+        .def("get_blocks", &PyGameEngine::get_blocks,
+             py::return_value_policy::reference_internal)
+        .def("get_debris", &PyGameEngine::get_debris,
+             py::return_value_policy::reference_internal)
         .def("clear_blocks", &PyGameEngine::clear_blocks)
         .def("get_x", &PyGameEngine::get_x)
         .def("get_y", &PyGameEngine::get_y)

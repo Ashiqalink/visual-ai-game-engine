@@ -258,21 +258,47 @@ class TestInactiveEntriesAreCompacted(unittest.TestCase):
                 self.assertTrue(all(b.active for b in engine.get_blocks()))
                 self.assertTrue(all(d.active for d in engine.get_debris()))
 
-    def test_fallback_compacts_the_list_object_itself(self):
+    def test_a_held_reference_keeps_tracking_the_engine(self):
         """
-        The fallback hands out its lists; compaction must mutate them in
-        place (the C++ engine erases within its vectors), not rebind, so a
-        reference a consumer already holds keeps tracking the engine.
+        get_blocks() / get_debris() hand out the engine's own storage, so a
+        reference a consumer already holds sees compaction happen to it.
+
+        The fallback compacts in place rather than rebinding; the binding
+        returns its vectors by reference instead of copying them into a fresh
+        Python list per call. Either engine getting this wrong leaves a game
+        that caches the result drawing a frame-old world.
         """
-        engine = PythonFallbackEngine(800.0, 600.0)
-        engine.add_block(330.0, 300.0, 40.0, 40.0, 1.0)
-        held_blocks = engine.get_blocks()
-        held_debris = engine.get_debris()
-        _smash_first_block(engine)
-        self.assertIs(engine.get_blocks(), held_blocks)
-        self.assertIs(engine.get_debris(), held_debris)
-        self.assertEqual(len(held_blocks), 0)
-        self.assertEqual(len(held_debris), 4)
+        for label, factory in ENGINES:
+            with self.subTest(engine=label):
+                engine = factory(800.0, 600.0)
+                engine.add_block(330.0, 300.0, 40.0, 40.0, 1.0)
+                held_blocks = engine.get_blocks()
+                held_debris = engine.get_debris()
+                _smash_first_block(engine)
+                self.assertIs(engine.get_blocks(), held_blocks)
+                self.assertIs(engine.get_debris(), held_debris)
+                self.assertEqual(len(held_blocks), 0)
+                self.assertEqual(len(held_debris), 4)
+
+    def test_the_view_indexes_and_iterates(self):
+        """
+        len(), indexing (including from the end), iteration and an out-of-range
+        IndexError are the surface both engines share. The C++ side is not a
+        `list` — it is a view onto the vector — so each of these is bound by
+        hand there and worth pinning.
+        """
+        for label, factory in ENGINES:
+            with self.subTest(engine=label):
+                engine = factory(800.0, 600.0)
+                engine.add_block(100.0, 100.0, 40.0, 40.0, 5.0)
+                engine.add_block(700.0, 100.0, 40.0, 40.0, 5.0)
+                blocks = engine.get_blocks()
+                self.assertEqual(len(blocks), 2)
+                self.assertEqual(blocks[0].x, 100.0)
+                self.assertEqual(blocks[-1].x, 700.0)
+                self.assertEqual([b.x for b in blocks], [100.0, 700.0])
+                with self.assertRaises(IndexError):
+                    blocks[2]
 
 
 if __name__ == "__main__":
