@@ -10,6 +10,15 @@ pybind11_add_module(engine_core
     src/engine.hpp
     src/engine.cpp
     src/bridge.cpp
+    src/raster3d.hpp
+    src/raster3d.cpp
+    src/raster3d_bind.cpp
+    src/voxelmesh.hpp
+    src/voxelmesh.cpp
+    src/voxelmesh_bind.cpp
+    src/gridops.hpp
+    src/gridops.cpp
+    src/gridops_bind.cpp
 )
 
 target_include_directories(engine_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

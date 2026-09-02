@@ -200,8 +200,19 @@ void bind_live_view(py::module_& m, const char* name) {
 
 }  // namespace
 
+// The software rasteriser's bindings, defined in raster3d_bind.cpp. Kept in
+// their own translation unit because they share nothing with the physics core
+// but the module they land in.
+void bind_raster3d(py::module_& m);
+void bind_voxelmesh(py::module_& m);
+void bind_gridops(py::module_& m);
+
 PYBIND11_MODULE(engine_core, m) {
     m.doc() = "High-performance C++ Game Engine core with pybind11 bindings";
+
+    bind_raster3d(m);
+    bind_voxelmesh(m);
+    bind_gridops(m);
 
     py::class_<Entity, std::shared_ptr<Entity>>(m, "Entity", py::dynamic_attr())
         .def_readonly("id", &Entity::id)

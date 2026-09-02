@@ -97,7 +97,10 @@ if Pybind11Extension is not None:
     ext_modules = [
         Pybind11Extension(
             "engine_core",
-            ["src/engine.cpp", "src/bridge.cpp"],
+            ["src/engine.cpp", "src/bridge.cpp", "src/raster3d.cpp",
+             "src/raster3d_bind.cpp", "src/voxelmesh.cpp",
+             "src/voxelmesh_bind.cpp",
+             "src/gridops.cpp", "src/gridops_bind.cpp"],
             include_dirs=["src"],
         ),
     ]

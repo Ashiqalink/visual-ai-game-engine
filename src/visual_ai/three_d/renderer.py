@@ -10,6 +10,22 @@ from visual_ai.three_d.camera import Camera3D
 from visual_ai.three_d.mesh import Mesh3D
 from visual_ai.three_d.transform import Transform3D
 
+try:
+    import engine_core as _engine_core
+
+    if not hasattr(_engine_core, "render_scene3d"):
+        # An engine_core built before the rasteriser landed. Importing it is
+        # not enough; a game with a stale .pyd on its path has to fall back.
+        _engine_core = None
+except ImportError:
+    _engine_core = None
+
+#: Whether the compiled rasteriser is available. The Python path below is not
+#: dead code when it is: it is what runs without a C++ toolchain, it is what
+#: the compiled path is tested against, and it is what a caller gets back by
+#: setting `Renderer3D.use_cpp = False`.
+CPP_RASTERISER_AVAILABLE = _engine_core is not None
+
 
 class _FaceBatch:
     """
@@ -76,6 +92,10 @@ class Renderer3D:
         self.ambient_intensity = ambient_intensity
         self.light_intensity = light_intensity
         self.set_light_angle(light_angle_deg)
+        #: Route to the compiled rasteriser when there is one. Set False to
+        #: force the Python path — which is what the parity tests do, and the
+        #: only way to compare the two on a machine where both exist.
+        self.use_cpp = CPP_RASTERISER_AVAILABLE
 
     def set_light_angle(self, angle_deg: float):
         """Set directional light vector based on angle in degrees."""
@@ -120,8 +140,9 @@ class Renderer3D:
         """
         Project and render a 3D Mesh onto an OpenCV image canvas.
         """
-        self._paint(frame, self._collect_faces(mesh, transform, material,
-                                               wireframe, item=0))
+        if not self._render_cpp(frame, [(mesh, transform, material)], wireframe):
+            self._paint(frame, self._collect_faces(mesh, transform, material,
+                                                   wireframe, item=0))
         return frame
 
     def render_scene(self, frame: np.ndarray, items, wireframe: bool = False) -> np.ndarray:
@@ -139,10 +160,71 @@ class Renderer3D:
         ordered by their average depth and one of them wins the whole overlap;
         separate objects are what this is for.
         """
-        self._paint(frame, _FaceBatch.concat([
-            self._collect_faces(mesh, transform, material, wireframe, item=index)
-            for index, (mesh, transform, material) in enumerate(items)]))
+        items = list(items)
+        if not self._render_cpp(frame, items, wireframe):
+            self._paint(frame, _FaceBatch.concat([
+                self._collect_faces(mesh, transform, material, wireframe, item=index)
+                for index, (mesh, transform, material) in enumerate(items)]))
         return frame
+
+    def _scene_arrays(self, items, wireframe: bool):
+        """
+        ``items`` flattened to the arrays the compiled rasteriser takes.
+
+        One vertex array and one CSR face pair per item, plus parallel arrays
+        of transform, base colour, opacity and wireframe flag. Unpacking the
+        Mesh3D/Transform3D/Material objects here rather than in C++ is what
+        keeps the binding free of type casters, and it costs one pass per item
+        per frame — not one per face, which is the pass that mattered.
+        """
+        verts, face_idx, face_off = [], [], []
+        xforms = np.empty((len(items), 9), dtype=np.float64)
+        colors = np.empty((len(items), 3), dtype=np.float64)
+        opacity = np.empty(len(items), dtype=np.float64)
+        for index, (mesh, transform, material) in enumerate(items):
+            if material is None:
+                material = Material()
+            indices, offsets = mesh.face_arrays()
+            verts.append(np.ascontiguousarray(mesh.vertices, dtype=np.float64))
+            face_idx.append(indices)
+            face_off.append(offsets)
+            xforms[index] = (transform.x, transform.y, transform.z,
+                             transform.rx, transform.ry, transform.rz,
+                             transform.sx, transform.sy, transform.sz)
+            rgba = material.base_color
+            colors[index] = (int(rgba[2] * 255), int(rgba[1] * 255),
+                             int(rgba[0] * 255))
+            opacity[index] = material.opacity
+        cam = np.array((self.camera.position[0], self.camera.position[1],
+                        self.camera.position[2], self.camera.focal_length,
+                        self.camera.near, self.camera.screen_width,
+                        self.camera.screen_height), dtype=np.float64)
+        light = np.array((self.light_dir[0], self.light_dir[1], self.light_dir[2],
+                          self.ambient_intensity, self.light_intensity),
+                         dtype=np.float64)
+        flags = np.full(len(items), bool(wireframe), dtype=bool)
+        return verts, face_idx, face_off, xforms, colors, opacity, flags, cam, light
+
+    def _render_cpp(self, frame: np.ndarray, items, wireframe: bool) -> bool:
+        """
+        Draw the scene with the compiled rasteriser, or return False.
+
+        False means "not drawn, use the Python path" — for a frame the
+        extension cannot write into as well as for a missing extension. The
+        frame has to be a contiguous, writeable HxWx3 uint8 buffer; a view with
+        a row stride, or a slice of a larger canvas, is not, and silently
+        painting into a copy of one would lose the frame.
+        """
+        if not self.use_cpp or _engine_core is None:
+            return False
+        if (frame.dtype != np.uint8 or frame.ndim != 3 or frame.shape[2] != 3
+                or not frame.flags["C_CONTIGUOUS"] or not frame.flags["WRITEABLE"]):
+            return False
+        items = [entry for entry in items if len(entry[0].faces)]
+        if not items:
+            return True
+        _engine_core.render_scene3d(frame, *self._scene_arrays(items, wireframe))
+        return True
 
     def _collect_faces(
         self,
@@ -220,7 +302,18 @@ class Renderer3D:
         return _FaceBatch.concat(batches)
 
     def _paint(self, frame: np.ndarray, batch: "_FaceBatch") -> np.ndarray:
-        """Draw collected faces back to front. See `_collect_faces`."""
+        """
+        Draw collected faces back to front. See `_collect_faces`.
+
+        Filled without antialiasing. `cv2.LINE_AA` cost 5.6 ms of a 14 ms paint
+        on a carved 80-cell Sculptor lump at 1280x800, and 89% of the pixels it
+        changed were on boundaries *inside* the lump — seams between abutting
+        faces of one continuous surface, where blending each face against
+        whatever the painter left underneath buys nothing and half the pixels
+        come out darker, half lighter. Only 11% went to the silhouette, which
+        is the edge anyone actually sees. The compiled rasteriser does not
+        antialias either, so the two paths can be compared.
+        """
         if not len(batch):
             return frame
         # Sort faces back to front (largest depth first); equal depths keep
@@ -237,7 +330,7 @@ class Renderer3D:
             opacity, wireframe = opacity_all[i], wireframe_all[i]
             if wireframe:
                 cv2.polylines(frame, [pts], isClosed=True, color=shaded_bgr,
-                              thickness=1, lineType=cv2.LINE_AA)
+                              thickness=1, lineType=cv2.LINE_8)
             else:
                 if opacity < 0.99:
                     min_x = max(0, int(pts[:, 0].min()))
@@ -248,10 +341,10 @@ class Renderer3D:
                         sub_pts = pts - np.array([min_x, min_y], dtype=np.int32)
                         roi = frame[min_y:max_y, min_x:max_x]
                         overlay = roi.copy()
-                        cv2.fillPoly(overlay, [sub_pts], shaded_bgr, lineType=cv2.LINE_AA)
+                        cv2.fillPoly(overlay, [sub_pts], shaded_bgr, lineType=cv2.LINE_8)
                         cv2.addWeighted(overlay, opacity, roi,
                                         1.0 - opacity, 0, roi)
                 else:
-                    cv2.fillPoly(frame, [pts], shaded_bgr, lineType=cv2.LINE_AA)
+                    cv2.fillPoly(frame, [pts], shaded_bgr, lineType=cv2.LINE_8)
 
         return frame

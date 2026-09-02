@@ -31,6 +31,25 @@ import numpy as np
 
 from visual_ai.three_d.mesh import Mesh3D
 
+try:
+    import engine_core as _engine_core
+    if not hasattr(_engine_core, "region_mesh"):
+        # A .pyd built before the mesher landed: importable, but without the
+        # symbol. Treat it as absent rather than letting the call fail later.
+        _engine_core = None
+except ImportError:
+    _engine_core = None
+
+#: Whether the compiled mesher is the one `region_mesh` will use. The pure
+#: Python path below stays authoritative — it is what runs without it, and it
+#: is what tests/three_d/test_voxelmesh.py compares the compiled one against.
+CPP_MESHER_AVAILABLE = _engine_core is not None
+
+#: Likewise for the grid morphology below, which landed after the mesher and
+#: so can be missing from a .pyd that has `region_mesh`.
+CPP_GRIDOPS_AVAILABLE = (_engine_core is not None
+                         and hasattr(_engine_core, "grid_erode"))
+
 #: Per side: the neighbour offset that must be empty for the face to exist,
 #: and the four corner offsets (cell units from the cell's minimum corner) in
 #: create_cube's order for that side.
@@ -57,6 +76,81 @@ def padded_grid(grid: np.ndarray) -> np.ndarray:
     return padded
 
 
+def erode(grid: np.ndarray) -> np.ndarray:
+    """Occupied cells all six of whose neighbours are occupied.
+
+    The grid's rim always peels: a rim cell has a neighbour off the grid, and
+    what is off the grid counts as empty. Repeated, this is a depth map in
+    disguise — `wall_layers` is what uses it that way.
+    """
+    if CPP_GRIDOPS_AVAILABLE:
+        return _engine_core.grid_erode(grid)
+    return _erode_py(grid)
+
+
+def _erode_py(grid: np.ndarray) -> np.ndarray:
+    """`erode` in pure numpy — the fallback, and the reference."""
+    pad = np.pad(grid, 1, constant_values=False)
+    return (grid
+            & pad[2:, 1:-1, 1:-1] & pad[:-2, 1:-1, 1:-1]
+            & pad[1:-1, 2:, 1:-1] & pad[1:-1, :-2, 1:-1]
+            & pad[1:-1, 1:-1, 2:] & pad[1:-1, 1:-1, :-2])
+
+
+def wall_layers(grid: np.ndarray, depth: int,
+                skin_depth: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    ``(core, skin)``: what hollowing a lump takes out, and the shell it must not.
+
+    One erosion peels the cells that touch air, so ``depth`` of them leave the
+    cells more than ``depth`` from any surface — the core, which a hollow lump
+    has none of. ``skin`` is the outermost ``skin_depth`` layers: the part of
+    the wall that is the model as far as anyone looking at it is concerned.
+
+    Depth from *any* surface, not from the outside specifically. Once a lump is
+    hollow the cavity is a surface too, so hollowing it again finds no core and
+    leaves the wall alone rather than eating it a layer at a time.
+    """
+    if CPP_GRIDOPS_AVAILABLE:
+        return _engine_core.grid_wall_layers(grid, int(depth), int(skin_depth))
+    return _wall_layers_py(grid, depth, skin_depth)
+
+
+def _wall_layers_py(grid: np.ndarray, depth: int,
+                    skin_depth: int) -> tuple[np.ndarray, np.ndarray]:
+    """`wall_layers` in pure numpy — the fallback, and the reference."""
+    core = grid
+    for _ in range(depth):
+        core = _erode_py(core)
+    skin = grid
+    for _ in range(skin_depth):
+        skin = _erode_py(skin)
+    return core, grid & ~skin
+
+
+def downsample(grid: np.ndarray, factor: int) -> np.ndarray:
+    """
+    ``grid`` in blocks of ``factor``, a block filled when at least half of it is.
+
+    A majority vote rather than an `any`: `any` dilates the surface by up to a
+    block and would fill a one-cell scratch back in, and an `all` would eat a
+    hollow wall. Ties go to filled, so a wall ``factor`` cells thick survives.
+    Cells past the last whole block are dropped.
+    """
+    if CPP_GRIDOPS_AVAILABLE:
+        return _engine_core.grid_downsample(grid, int(factor))
+    return _downsample_py(grid, factor)
+
+
+def _downsample_py(grid: np.ndarray, factor: int) -> np.ndarray:
+    """`downsample` in pure numpy — the fallback, and the reference."""
+    shape = tuple(size // factor for size in grid.shape)
+    blocks = grid[:shape[0] * factor, :shape[1] * factor, :shape[2] * factor]
+    blocks = blocks.reshape(shape[0], factor, shape[1], factor,
+                            shape[2], factor)
+    return blocks.sum(axis=(1, 3, 5)) * 2 >= factor ** 3
+
+
 def region_mesh(grid: np.ndarray, padded: np.ndarray,
                 lo: tuple[int, int, int], hi: tuple[int, int, int],
                 cell: float) -> Mesh3D | None:
@@ -74,6 +168,27 @@ def region_mesh(grid: np.ndarray, padded: np.ndarray,
     corner put it at the same position and the sculpt tools — which move
     vertices — cannot tear them apart.
     """
+    if _engine_core is not None:
+        built = _engine_core.region_mesh(grid, padded, tuple(lo), tuple(hi),
+                                         cell)
+        if built is None:
+            return None
+        vertices, quads = built
+        mesh = Mesh3D(vertices=vertices, faces=quads.tolist())
+        # The mesher already has the faces flat, and every one is a quad, so
+        # hand the rasteriser its CSR form directly rather than making
+        # face_arrays() walk the list of lists back into one.
+        mesh._face_arrays = (quads.reshape(-1),
+                             np.arange(0, 4 * len(quads) + 1, 4,
+                                       dtype=np.int32))
+        return mesh
+    return _region_mesh_py(grid, padded, lo, hi, cell)
+
+
+def _region_mesh_py(grid: np.ndarray, padded: np.ndarray,
+                    lo: tuple[int, int, int], hi: tuple[int, int, int],
+                    cell: float) -> Mesh3D | None:
+    """`region_mesh` in pure numpy — the fallback, and the reference."""
     core = grid[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]]
     if not core.any():
         return None

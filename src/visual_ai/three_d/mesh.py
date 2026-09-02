@@ -18,6 +18,31 @@ class Mesh3D:
     # Built on first render, never by hand — see face_groups().
     _face_groups: list[tuple[np.ndarray, np.ndarray]] | None = field(
         default=None, init=False, repr=False, compare=False)
+    # Likewise, for the compiled rasteriser — see face_arrays().
+    _face_arrays: tuple[np.ndarray, np.ndarray] | None = field(
+        default=None, init=False, repr=False, compare=False)
+
+    def face_arrays(self) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Faces flattened to ``(indices, offsets)``, face ``i`` being
+        ``indices[offsets[i]:offsets[i + 1]]``.
+
+        This is what the compiled rasteriser takes. `face_groups` buckets by
+        vertex count because numpy needs rectangular arrays; a C++ loop does
+        not, and walking the faces in their original order means a face's
+        number is its position, so no separate array of those is needed. Cached
+        for the same reason the buckets are: faces never change after a mesh is
+        built.
+        """
+        if self._face_arrays is None:
+            offsets = np.zeros(len(self.faces) + 1, dtype=np.int32)
+            if len(self.faces):
+                offsets[1:] = np.cumsum([len(f) for f in self.faces],
+                                        dtype=np.int32)
+            flat = np.fromiter((v for face in self.faces for v in face),
+                               dtype=np.int32, count=int(offsets[-1]))
+            self._face_arrays = (flat, offsets)
+        return self._face_arrays
 
     def face_groups(self) -> list[tuple[np.ndarray, np.ndarray]]:
         """
