@@ -10,26 +10,33 @@ High-performance computer vision AI tracking and physics SDK for game developers
 
 ```
 visual_ai_game_engine/
-├── pyproject.toml          # Modern PEP 517 packaging configuration
-├── setup.py                # Legacy setuptools build configuration
-├── CMakeLists.txt          # CMake build script for C++ core module
-├── src/                    # Source directory (C++ core & Python library)
-│   ├── engine.hpp          # C++ core header
-│   ├── engine.cpp          # Core physics & game logic
-│   ├── bridge.cpp          # pybind11 C++/Python bindings
-│   └── visual_ai/          # Python library package
-│       ├── __init__.py     # SDK entry point & engine selector
-│       ├── pipeline.py     # Threaded camera vision detector
-│       └── fallback_engine.py # Python fallback engine
-├── tests/                  # Automated test suite
-│   ├── test_engine.py      # Unit tests for physics engine
-│   └── integration_test.py # Full pipeline integration tests
-├── docs/                   # Documentation & developer examples
-│   ├── index.md            # Comprehensive user manual
-│   └── examples/
-│       └── demo.py         # Developer interactive demo
-├── requirements.txt        # Package dependencies
-└── README.md               # Project overview & quickstart guide
+├── pyproject.toml          # PEP 517 packaging (setuptools + pybind11)
+├── setup.py                # Builds the engine_core extension
+├── CMakeLists.txt          # CMake build of the same extension
+├── pytest.ini              # pythonpath=src, testpaths=tests
+├── src/
+│   ├── engine.hpp/.cpp     # C++ physics core (GameEngine, blocks, debris)
+│   ├── bridge.cpp          # pybind11 bindings for the physics core
+│   ├── raster3d.*          # C++ 3D rasteriser (+ raster3d_bind.cpp)
+│   ├── voxelmesh.*         # C++ voxel mesher (+ voxelmesh_bind.cpp)
+│   ├── gridops.*           # C++ grid morphology (+ gridops_bind.cpp)
+│   └── visual_ai/          # Python package
+│       ├── __init__.py     # Public API; picks engine_core, else the Python fallback
+│       ├── pipeline.py     # VisionPipeline: threaded camera face/hand tracking
+│       ├── fallback_engine.py # Pure-Python physics engine (parity with engine.cpp)
+│       ├── capture.py, accel.py, openvino_*.py  # Camera backends, accelerator policy
+│       ├── depth_*.py, tof_stabilizer.py        # Depth sources and stabilisers
+│       ├── gesture_*.py, noise_filter.py        # Hand-sign math, MLP classifier, filters
+│       ├── imaging.py, low_light.py, matting.py, segment.py, spritegen.py
+│       ├── display/        # SDL / null display backends and frame pacing
+│       └── three_d/        # Camera, transform, mesh, voxel, software renderer
+├── tests/                  # pytest suite (test_*.py)
+├── benchmarks/             # Per-stage cost, accelerator and filter benches
+├── examples/               # demo.py, air_draw.py, playground.py, three_d/
+├── tools/                  # Gesture sample capture / MLP training, depth recording
+├── docs/                   # index.md manual, opencv_integration_challenges.md
+├── requirements.txt
+└── README.md
 ```
 
 ---
@@ -54,10 +61,11 @@ python setup.py build_ext --inplace
 
 ## 🧪 Running Tests
 
-Run the automated test suite using `unittest`:
+The suite is plain `pytest`; `pytest.ini` puts `src/` on the path so it runs
+against the source tree, not an installed copy:
 
 ```bash
-python -m unittest discover -s tests
+python -m pytest -q
 ```
 
 ---
@@ -102,13 +110,12 @@ finally:
 
 ## 📜 License
 
-**Proprietary — all rights reserved. Not open source.**
+**Source-available, personal-use license. Not open source.**
 
-There is deliberately no LICENSE file. Copyright is automatic and exclusive
-without one, so no permission to copy, redistribute, publish, or create
-derivative works is granted to anyone. Adding any of the licenses GitHub
-offers would *weaken* this — every one of them grants redistribution rights,
-which is what makes them open source.
+You may download, build and run this software yourself, for your own
+non-commercial use. You may not copy, redistribute, publish, sublicense,
+sell, or create derivative works from it, in whole or in part. All other
+rights are reserved by the copyright holder.
 
-If you received a copy, you received it directly, and the terms are whatever
-was agreed with you. Do not pass it on.
+There is deliberately no LICENSE file: every license GitHub offers grants
+redistribution rights, which this one does not.
